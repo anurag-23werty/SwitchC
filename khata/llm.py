@@ -272,11 +272,20 @@ class LLM:
             )
         except (httpx.TimeoutException, httpx.TransportError) as e:
             raise _Retryable(f"{type(e).__name__}: {e}") from e
+        if r.status_code == 429 and re.search(r"(?i)per[- ]day|daily", r.text):
+            # A daily cap won't lift by waiting: move on to the next endpoint now.
+            raise _Retryable(f"daily cap: {r.text[:200]}", float("inf"))
         if r.status_code in RETRYABLE:
             raise _Retryable(
                 f"HTTP {r.status_code}: {r.text[:200]}", _wait_from_headers(r.headers)
             )
-        if r.status_code == 400 and not json_mode and "response_format" in r.text:
+        if (
+            r.status_code == 400
+            and not json_mode
+            and ("response_format" in r.text or "json_validate_failed" in r.text)
+        ):
+            # The model doesn't do strict schemas, or (Groq) its output failed the
+            # schema server-side: try once more in plain JSON mode.
             raise _BadSchemaMode(r.text[:200])
         if r.status_code >= 400:
             raise LLMUnavailable(f"{ep.name} HTTP {r.status_code}: {r.text[:300]}")

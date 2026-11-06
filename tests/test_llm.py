@@ -196,3 +196,24 @@ async def test_prompt_guard_scores_every_window_and_takes_the_max():
     )
     assert await guard.score(text) == pytest.approx(0.98)
     assert len(bodies) > 1 and all(len(b) <= 90 for b in bodies)
+
+
+async def test_openrouter_daily_cap_falls_back_at_once():
+    capped = httpx.Response(
+        429, json={"error": {"message": "Rate limit exceeded: free-models-per-day"}}
+    )
+    llm, seen, waits = client([capped, ok(GOOD, "m2")])
+    res = await ask(llm)
+    assert res.endpoint == "two" and waits == []
+
+
+async def test_server_side_schema_failure_retries_in_json_mode():
+    failed = httpx.Response(
+        400,
+        json={"error": {"code": "json_validate_failed", "failed_generation": "{ x=1"}},
+    )
+    llm, seen, _ = client([failed, ok(GOOD)])
+    res = await ask(llm)
+    assert res.endpoint == "one" and seen[1]["response_format"] == {
+        "type": "json_object"
+    }
