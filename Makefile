@@ -1,12 +1,13 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: help switch-env env up down ps logs hello test
+.PHONY: help switch-env env up down ps logs hello test seed invoices
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
 	@echo "make env         create .env from .env.example, copying the Switch tokens"
 	@echo "make up          start Switch (core, Mattermost, Gateway) and Khata's database"
 	@echo "make down        stop everything (data volumes are kept)"
+	@echo "make seed        rebuild Khata's database and generate the invoice PDFs + golden set"
 	@echo "make hello       run the Phase 0 smoke-test agent"
 	@echo "make test        run the test suite"
 
@@ -33,6 +34,13 @@ ps:
 
 logs:
 	$(COMPOSE) logs -f switch setup
+
+seed:
+	uv run python -m db.seed
+	uv run python -m data.generate_invoices
+
+invoices:
+	uv run python -m data.generate_invoices
 
 hello:
 	uv run python scripts/hello_agent.py
