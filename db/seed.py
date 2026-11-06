@@ -32,9 +32,19 @@ def reset_schema(conn: psycopg.Connection) -> None:
 
 def load_masters(conn: psycopg.Connection) -> dict[str, int]:
     c = fx.COMPANY
+    assert c.bank is not None
     conn.execute(
-        "INSERT INTO company (name, gstin, state_code, address) VALUES (%s, %s, %s, %s)",
-        (c.name, c.gstin, c.state_code, ", ".join(c.address)),
+        """INSERT INTO company (name, gstin, state_code, address, bank_name, bank_account, ifsc)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (
+            c.name,
+            c.gstin,
+            c.state_code,
+            ", ".join(c.address),
+            c.bank.name,
+            c.bank.account,
+            c.bank.ifsc,
+        ),
     )
     for p in fx.PEOPLE:
         conn.execute(
@@ -172,8 +182,8 @@ def load_knowledge(conn: psycopg.Connection, vendor_ids: dict[str, int]) -> None
         )
 
 
-def main() -> None:
-    url = get_settings().khata_database_url
+def seed(url: str) -> dict[str, int]:
+    """Rebuild the `khata` schema at `url` and load the demo masters. Returns row counts."""
     with psycopg.connect(url, options="-c search_path=khata,public") as conn:
         reset_schema(conn)
         vendor_ids = load_masters(conn)
@@ -195,6 +205,11 @@ def main() -> None:
                 "people",
             )
         }
+    return counts
+
+
+def main() -> None:
+    counts = seed(get_settings().khata_database_url)
     print("seeded khata:", ", ".join(f"{k}={v}" for k, v in counts.items()))
 
 

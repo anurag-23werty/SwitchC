@@ -64,7 +64,7 @@ COMPANY = Party(
     ),
     phone="+91 80 4100 2200",
     email="accounts@khatademo.example",
-    bank=None,
+    bank=Bank("HDFC Bank", "50200011223344", "HDFC0000123"),
     first_seen=date(2020, 4, 1),
 )
 

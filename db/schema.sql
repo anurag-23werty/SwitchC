@@ -11,7 +11,10 @@ CREATE TABLE company (
     name        text NOT NULL,
     gstin       char(15) NOT NULL,
     state_code  char(2) NOT NULL,
-    address     text NOT NULL
+    address     text NOT NULL,
+    bank_name     text NOT NULL,   -- the account payments are debited from
+    bank_account  text NOT NULL,
+    ifsc          char(11) NOT NULL
 );
 
 -- People in the finance room. `username` is their Mattermost username, which is
@@ -118,6 +121,11 @@ CREATE TABLE invoices (
     file_sha256            char(64),
     switch_room_id         text,
     switch_thread_id       text,                        -- the invoice's thread in the room
+    route                  text,                        -- set by route_approval
+    approval_steps         text[] NOT NULL DEFAULT '{}', -- e.g. {manager,owner}
+    approvers              text[] NOT NULL DEFAULT '{}', -- usernames for those steps
+    callback_instruction   text,                        -- bank-change hard stop
+    raw_text               text,                        -- the document's text (untrusted)
     received_at            timestamptz NOT NULL DEFAULT now(),
     updated_at             timestamptz NOT NULL DEFAULT now()
 );
