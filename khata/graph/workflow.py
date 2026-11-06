@@ -319,7 +319,7 @@ def build_graph(deps: Deps) -> StateGraph:
 
     async def analyst(s: InvoiceState) -> dict:
         inv = s["invoice_id"]
-        review, _ = await analyse(llm, gw, inv)
+        review, facts = await analyse(llm, gw, inv)
         out: dict[str, Any] = {
             "analyst": review.note.model_dump(mode="json") if review.note else None,
             "analyst_model": review.analyst_model,
@@ -333,7 +333,13 @@ def build_graph(deps: Deps) -> StateGraph:
                 invoice_id=inv,
                 agent="khata-analyst",
                 kind="analysis",
-                content={**out["analyst"], "corrections": review.corrections},
+                # What it was shown is kept with what it wrote: an audit (and the
+                # eval's faithfulness judge) can check one against the other.
+                content={
+                    **out["analyst"],
+                    "corrections": review.corrections,
+                    "facts_seen": _j(facts),
+                },
                 provider=review.analyst_provider,
                 model=review.analyst_model,
             )
