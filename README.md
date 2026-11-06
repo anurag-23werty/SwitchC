@@ -1,6 +1,6 @@
 # Khata — an agentic accounts-payable room on Switch
 
-> Status: Phase 3 (LangGraph agent runtime with live LLMs, approval gate that survives restarts) done. The full README lands in Phase 7.
+> Status: Phase 4 (Khata's seven agents working #ap-desk and #ap-audit in Switch) done. The full README lands in Phase 7.
 
 Khata turns a finance team's chat channel into a [Switch](https://github.com/sandbox-quantum/switch)
 room where AI agents receive, read, verify and match vendor invoices, explain exceptions,
@@ -38,8 +38,18 @@ providers, the approval gate, retries, Prompt Guard) is in
 [docs/agent-runtime.md](docs/agent-runtime.md). LLM keys go in `.env`
 (`GROQ_API_KEY`, `OPENROUTER_API_KEY`; both free, no card).
 
-Open Mattermost at http://localhost:8065 and sign in as `user` (password:
-`MATTERMOST_USER_PASSWORD` in `switch/stack/.env`). In the `khata-hello` channel, send
-`@khata-hello hi` — the agent replies in the thread.
+## Khata in the room
 
-See [docs/switch-notes.md](docs/switch-notes.md) for exactly how Khata uses the protocol.
+```sh
+make setup-switch   # 7 agents, the finance team's accounts, #ap-desk + #ap-audit from switch/khata.template.yaml
+make serve          # the agents go to work
+```
+
+Open http://localhost:8065, sign in as `ravi` (password: `KHATA_DEMO_PASSWORD` in
+`.env`) and drop an invoice PDF from `data/invoices/` into **#ap-desk**. The agents
+work it in its thread and tag the approver; sign in as `priya` or `owner` and reply
+`approve <reason>` or `reject <reason>`. Decisions also appear in **#ap-audit**.
+`uv run python scripts/room_demo.py` runs D01–D09 that way without clicking.
+
+How Khata uses Switch: [docs/switch-room.md](docs/switch-room.md) and
+[docs/switch-notes.md](docs/switch-notes.md).

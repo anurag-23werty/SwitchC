@@ -209,11 +209,22 @@ stretch.
   takes ~1 min to become ready. `setup` waits for it.
 - The stack needs `SWITCH_VERSION` set — no default by design. We pin `0.31.0`.
 
-## Open items for Phase 4
+## Open items from Phase 0, resolved in Phase 4
 
-1. Does an `@username` in an agent's message notify a Mattermost user? (Router
-   tags Priya/Owner this way.) Fallback: Mattermost API post as a mention-only
-   message, or a DM room per approver via `create_room(channel_type="direct")`.
-2. Creating extra Mattermost users (Ravi, Priya, Owner) for the demo — via the
-   Mattermost API in our seed script, then `add_users_to_room`.
-3. Kickoff vs. addressing order (see Q4).
+1. An `@username` in an agent's post **does** notify the Mattermost user ✅ (Priya's
+   `mention_count` rose with each approval request).
+2. The team's accounts are created with Mattermost's API in `khata setup-switch`
+   and named in the template's `users:`; Switch resolved them without them ever
+   signing in ✅.
+3. Kickoff vs addressing order: the template is run by a person (the Gateway admin),
+   not an agent, and the kickoff mentions no agent, so order doesn't matter. Policies
+   are set right after the rooms exist ✅.
+
+## Found in Phase 4
+
+- An event stream opened with `start_from=head` misses everything posted while the
+  agent was offline. Store the last `sequence` and reopen with `start_from=<seq>` /
+  `Last-Event-ID` (Khata keeps it in `switch_cursors`).
+- Switch message/thread ids are Switch's own, not Mattermost post ids.
+- Agents registered with the registration token have no owner, so they can't run
+  `create_room_from_yaml`; the Gateway's `POST /gateway/rooms/from-yaml` (as admin) works.
