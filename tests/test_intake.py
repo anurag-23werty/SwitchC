@@ -7,7 +7,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from khata.agents.intake import Reading, reconcile
+from khata.agents.intake import Reading, merge, reconcile
 from khata.agents.prompts import wrap_untrusted
 from khata.agents.schemas import Extraction, parse_amount, parse_date
 from khata.models import Flag
@@ -138,3 +138,49 @@ def test_a_decision_must_be_explicit(text, expected):
     assert (got and (got["decision"], got["reason"])) == expected or (
         got is None and expected is None
     )
+
+
+G14 = next(g for g in GOLDEN if g["id"] == "G14")
+G14_TEXT = (
+    "Invoice No: DPK/1192\nGSTIN: 29AABCD7731E1Z4\nBill To: GSTIN: 29AAFCK8812L1Z0\n"
+    "1 BOPP packing tape 48 mm x 65 m 3919 300 roll 45.00 18 13,500.00\n"
+    "Taxable Value 13,500.00\n"
+)
+
+
+def g14_reading(name: str, model: str, **line_override) -> Reading:
+    ext = Extraction.model_validate(truth_as_extraction(G14["truth"]))
+    ext.lines[0] = ext.lines[0].model_copy(update=line_override)
+    return Reading(name, name, model, extraction=ext, data=ext.to_invoice_data())
+
+
+def test_lines_that_add_up_beat_a_misread_quantity():
+    """Seen live on G14: reader A took the HSN 3919 as the quantity."""
+    a = g14_reading("a", "m1", qty="3919", hsn=None)
+    b = g14_reading("b", "m2")
+    data, notes = merge(a.data, b.data, G14_TEXT)
+    assert data.lines[0].qty == D("300") and data.lines[0].hsn == "3919"
+    assert "Took reader B's line items" in notes[0]
+
+
+def test_hsn_found_in_the_document_beats_a_missing_one():
+    data, _ = merge(
+        g14_reading("a", "m1", hsn=None).data, g14_reading("b", "m2").data, G14_TEXT
+    )
+    assert data.lines[0].hsn == "3919"
+
+
+def test_identical_or_unresolvable_differences_keep_reader_a():
+    a, b = g14_reading("a", "m1"), g14_reading("b", "m2")
+    assert merge(a.data, b.data, G14_TEXT) == (a.data, [])
+    b2 = g14_reading(
+        "b", "m2", hsn="9999"
+    )  # not in the document: A's grounded HSN stays
+    assert merge(a.data, b2.data, G14_TEXT)[0].lines[0].hsn == "3919"
+
+
+def test_missing_buyer_gstin_is_taken_from_the_reader_that_found_it():
+    a = g14_reading("a", "m1")
+    a.data = a.data.model_copy(update={"buyer_gstin": None})
+    data, notes = merge(a.data, g14_reading("b", "m2").data, G14_TEXT)
+    assert data.buyer_gstin == "29AAFCK8812L1Z0" and "buyer_gstin" in notes[0]

@@ -122,6 +122,64 @@ async def read_invoice(
     return out
 
 
+ONE_RUPEE = Decimal("1.00")
+SCALARS = ("buyer_gstin", "po_number", "ifsc", "vendor_name")
+
+
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[A-Za-z0-9/.-]+", text.replace(",", "")))
+
+
+def lines_score(data: InvoiceData, raw_text: str) -> tuple[int, int, int]:
+    """How well a reading's line items hold together, best first:
+    lines where qty x rate = amount, whether the lines sum to the taxable value,
+    and how many HSN/SAC codes literally appear in the document."""
+    consistent = sum(
+        abs(ln.qty * ln.rate - ln.amount) <= ONE_RUPEE for ln in data.lines
+    )
+    sums = (
+        abs(sum((ln.amount for ln in data.lines), Decimal(0)) - data.taxable_value)
+        <= ONE_RUPEE
+    )
+    toks = _tokens(raw_text)
+    hsn = sum(bool(ln.hsn) and ln.hsn in toks for ln in data.lines)
+    return consistent, int(sums), hsn
+
+
+def merge(
+    a: InvoiceData, b: InvoiceData, raw_text: str
+) -> tuple[InvoiceData, list[str]]:
+    """Two readings that agree on the critical fields; settle the rest by code.
+
+    Line items: the reading whose lines add up (then: whose HSN codes are in the
+    document) wins. Other fields: a value found verbatim in the document beats one
+    that isn't. Ties go to reader A. Every choice of B is noted.
+    """
+    notes: list[str] = []
+    updates: dict[str, Any] = {}
+    if a.lines != b.lines:
+        sa, sb = lines_score(a, raw_text), lines_score(b, raw_text)
+        if sb > sa:
+            updates["lines"] = b.lines
+            notes.append(
+                f"Took reader B's line items: they hold together better "
+                f"(lines that multiply out, sum, HSN in document: B {sb} vs A {sa})."
+            )
+    hay = _squash(raw_text)
+
+    def in_doc(v: Any) -> bool:
+        return v is not None and _squash(str(v)) in hay
+
+    for f in SCALARS:
+        va, vb = getattr(a, f), getattr(b, f)
+        if va != vb and not in_doc(va) and in_doc(vb):
+            updates[f] = vb
+            notes.append(
+                f"Took reader B's {f} ({vb}): reader A's ({va}) isn't in the document."
+            )
+    return (a.model_copy(update=updates) if updates else a), notes
+
+
 @dataclass
 class Reconciled:
     data: InvoiceData | None
@@ -179,6 +237,9 @@ def reconcile(
                 )
             )
 
+    if not out.disagreements and len(usable) == 2:
+        out.data, merge_notes = merge(a.data, b.data, raw_text)
+        out.notes += merge_notes
     if not out.disagreements:
         missing = [
             f
