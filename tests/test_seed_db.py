@@ -1,23 +1,14 @@
-"""Checks against the seeded database. Skipped when khata-db isn't running."""
+"""Checks against a freshly seeded database (khata_test, so the demo data is untouched)."""
 
 import psycopg
 import pytest
 
 from data import fixtures as fx
-from khata.config import get_settings
 
 
 @pytest.fixture(scope="module")
-def conn():
-    try:
-        c = psycopg.connect(
-            get_settings().khata_database_url,
-            options="-c search_path=khata,public",
-            connect_timeout=3,
-        )
-    except psycopg.OperationalError:
-        pytest.skip("khata-db not reachable; run `make up && make seed`")
-    with c:
+def conn(test_db_url):
+    with psycopg.connect(test_db_url, options="-c search_path=khata,public") as c:
         yield c
 
 
