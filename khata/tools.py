@@ -9,6 +9,9 @@ the per-agent allowlist.
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import re
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -30,6 +33,8 @@ from khata.payments import NotPayable
 from khata.payments import draft_payment as draft
 from khata.policy import ToolFn
 from khata.state import audit, transition
+
+logger = logging.getLogger(__name__)
 
 ROLE_FOR_STEP = {"manager": "finance_manager", "owner": "owner"}
 
@@ -54,8 +59,11 @@ class Toolbox:
         files_root: Path,
         payments_dir: Path,
         today: date,
+        guard: Any = None,
     ) -> None:
+        """`guard` is an optional khata.llm.PromptGuard: a second injection check."""
         self.pool = pool
+        self.guard = guard
         self.files_root = files_root.resolve()
         self.payments_dir = payments_dir
         self.today = today
@@ -64,6 +72,7 @@ class Toolbox:
         return {
             name: getattr(self, name)
             for name in (
+                "classify_input",
                 "extract_invoice",
                 "validate_gst",
                 "detect_injection",
@@ -95,6 +104,32 @@ class Toolbox:
                 _report(r),
             )
         return _report(r)
+
+    # --- Dispatcher ------------------------------------------------------------
+
+    async def classify_input(
+        self,
+        *,
+        agent: str,
+        text: str = "",
+        file_name: str | None = None,
+        in_invoice_thread: bool = False,
+    ) -> dict[str, Any]:
+        """What a room event is: an invoice, a decision, a status question, or other.
+
+        Rules, not a model: an attachment is classified by its type, and a decision
+        must say approve/reject explicitly (an LLM never turns chat into a decision).
+        """
+        if file_name:
+            if file_name.lower().endswith(".pdf"):
+                return {"kind": "invoice", "reason": "PDF attachment"}
+            return {"kind": "unsupported_file", "reason": f"not a PDF: {file_name}"}
+        decision = parse_decision(text)
+        if decision and in_invoice_thread:
+            return {"kind": "decision", **decision}
+        if re.search(r"(?i)\b(status|where is|paid yet|when will)\b", text):
+            return {"kind": "status_query", "reason": "asks about an invoice"}
+        return {"kind": "other", "reason": "no rule matched"}
 
     # --- Intake ----------------------------------------------------------------
 
@@ -133,9 +168,30 @@ class Toolbox:
             ).fetchone()
         if row is None or row["raw_text"] is None:
             raise LookupError(f"invoice {invoice_id} has no document text")
-        return await self._record_check(
-            invoice_id, agent, injection_check(row["raw_text"])
-        )
+        r = injection_check(row["raw_text"])
+        if self.guard is not None:
+            async with self.pool.connection() as conn:
+                threshold = (await repo.get_policy(conn)).injection_score_threshold
+            try:
+                score = await self.guard.score(row["raw_text"])
+            except Exception as e:  # the regex layer still stands
+                logger.warning("prompt guard unavailable: %s", e)
+                r.add(
+                    None, f"Prompt Guard unavailable ({type(e).__name__}); regex only"
+                )
+            else:
+                if score >= threshold:
+                    r.add(
+                        Flag.INJECTION,
+                        f"Prompt Guard scores the text {score:.3f} "
+                        f"(threshold {threshold}) as an attack on an AI",
+                        score=round(score, 4),
+                    )
+                else:
+                    r.add(
+                        None, f"Prompt Guard score {score:.4f}", score=round(score, 4)
+                    )
+        return await self._record_check(invoice_id, agent, r)
 
     # --- Verifier --------------------------------------------------------------
 
@@ -428,6 +484,7 @@ async def ingest(
     sha256: str,
     room_id: str | None,
     thread_id: str | None,
+    graph_thread_id: str | None = None,
 ) -> int:
     """Create the invoice row for a received document."""
     async with pool.connection() as conn, conn.transaction():
@@ -435,7 +492,8 @@ async def ingest(
             conn, file_path, sha256, room_id, thread_id
         )
         await conn.execute(
-            "UPDATE invoices SET raw_text = %s WHERE id = %s", (text, invoice_id)
+            "UPDATE invoices SET raw_text = %s, graph_thread_id = %s WHERE id = %s",
+            (text, graph_thread_id, invoice_id),
         )
         await audit(
             conn,
@@ -457,6 +515,8 @@ async def save_extraction(
     readings: dict[str, Any],
     confidence,
     actor: str,
+    extra_flags: list[Flag] | None = None,
+    notes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Store the agreed reading, identify the vendor, and move to EXTRACTED."""
     async with pool.connection() as conn, conn.transaction():
@@ -466,7 +526,7 @@ async def save_extraction(
         await repo.store_extraction(
             conn, invoice_id, data, vendor, readings, confidence
         )
-        flags = []
+        flags = list(extra_flags or [])
         if vendor is None:
             flags.append(Flag.VENDOR_UNKNOWN)
         elif matched_by == "name" and data.supplier_gstin != vendor.gstin:
@@ -484,10 +544,71 @@ async def save_extraction(
             "agent",
             f"Read invoice {data.invoice_no} from "
             f"{vendor.name if vendor else data.vendor_name}",
-            {"vendor_matched_by": matched_by, "flags": [f.value for f in flags]},
+            {
+                "vendor_matched_by": matched_by,
+                "flags": [f.value for f in flags],
+                "notes": notes or [],
+            },
         )
     return {
         "vendor_code": vendor.code if vendor else None,
         "matched_by": matched_by,
         "flags": [f.value for f in flags],
+    }
+
+
+async def save_note(
+    pool: AsyncConnectionPool,
+    *,
+    invoice_id: int,
+    agent: str,
+    kind: str,
+    content: dict[str, Any],
+    provider: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Keep what an LLM agent wrote, and note it in the audit trail."""
+    async with pool.connection() as conn, conn.transaction():
+        await conn.execute(
+            """INSERT INTO agent_notes (invoice_id, agent, kind, content, provider, model)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (
+                invoice_id,
+                agent,
+                kind,
+                json.dumps(content, default=str),
+                provider,
+                model,
+            ),
+        )
+        await audit(
+            conn,
+            invoice_id,
+            agent,
+            "agent",
+            kind,
+            str(content.get("headline") or content.get("summary") or kind)[:500],
+            {"provider": provider, "model": model},
+        )
+
+
+_DECISION = re.compile(
+    r"^\s*(?:@\S+\s+)?(?P<d>approve[ds]?|reject(?:ed)?)\b[\s:,.-]*(?P<reason>.*)$",
+    re.I | re.S,
+)
+
+
+def parse_decision(text: str) -> dict[str, str] | None:
+    """'approve - freight agreed' -> {decision: approve, reason: 'freight agreed'}.
+
+    The message must *start* with approve or reject (after an optional @mention).
+    "Looks fine I guess" is not a decision; "don't approve" isn't either.
+    """
+    m = _DECISION.match(text or "")
+    if not m:
+        return None
+    word = m.group("d").lower()
+    return {
+        "decision": "approve" if word.startswith("approve") else "reject",
+        "reason": m.group("reason").strip(),
     }
