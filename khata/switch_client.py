@@ -227,12 +227,19 @@ class RoomConnection:
     catch-up happen on open and every op made through it is bound to the room.
     """
 
-    def __init__(self, agent: SwitchAgent, room_id: str, event_filter: str) -> None:
+    def __init__(
+        self,
+        agent: SwitchAgent,
+        room_id: str,
+        event_filter: str,
+        cursor: int | None = None,
+    ) -> None:
+        """`cursor`: resume after this event sequence (a restart); None starts at head."""
         self.agent = agent
         self.room_id = room_id
         self.event_filter = event_filter
         self.connection_id = str(uuid.uuid4())
-        self.cursor: int | None = None
+        self.cursor: int | None = cursor
         self.heartbeat_interval = 2.0
         self._reopen = asyncio.Event()
 

@@ -159,6 +159,24 @@ async def cmd_retry(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_setup_switch(args: argparse.Namespace) -> int:
+    from khata.config import get_settings
+    from khata.switch_setup import setup
+
+    report = await setup(get_settings())
+    for k, v in report.items():
+        print(f"{k}: {v}")
+    return 0
+
+
+async def cmd_serve(args: argparse.Namespace) -> int:
+    from khata.config import get_settings
+    from khata.switch_service import serve
+
+    await serve(get_settings())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="khata", description=__doc__.split("\n\n")[0])
     p.add_argument("-v", "--verbose", action="store_true")
@@ -188,6 +206,12 @@ def main(argv: list[str] | None = None) -> None:
     r = sub.add_parser("retry", help="re-run a run that stopped on an error")
     r.add_argument("invoice", type=int)
     r.set_defaults(fn=cmd_retry)
+    sub.add_parser(
+        "setup-switch", help="register agents, people and rooms on Switch"
+    ).set_defaults(fn=cmd_setup_switch)
+    sub.add_parser(
+        "serve", help="run Khata's agents in #ap-desk and #ap-audit"
+    ).set_defaults(fn=cmd_serve)
     args = p.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,

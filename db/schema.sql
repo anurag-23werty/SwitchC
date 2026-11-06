@@ -260,3 +260,27 @@ CREATE TABLE llm_calls (
     duration_ms   int,
     created_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- Every room post Khata acted on (room -> Postgres). The message id is the
+-- key, so an event Switch redelivers after a reconnect is handled once.
+CREATE TABLE switch_inbox (
+    message_id   text PRIMARY KEY,
+    room_id      text NOT NULL,
+    thread_id    text,
+    sender       text NOT NULL,
+    kind         text NOT NULL,          -- invoice | decision | hint | ignored | ...
+    body         text,
+    invoice_id   int REFERENCES invoices(id),
+    received_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX invoices_switch_thread ON invoices (switch_thread_id);
+
+-- Where each agent's Switch event stream got to, so a restart catches up on
+-- everything posted while Khata was down instead of starting from "now".
+CREATE TABLE switch_cursors (
+    agent       text NOT NULL,
+    room_id     text NOT NULL,
+    cursor      bigint NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (agent, room_id)
+);
