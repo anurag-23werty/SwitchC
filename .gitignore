@@ -2,6 +2,7 @@
 .env
 switch/stack/.env
 .khata-agents.json
+.khata-switch.json
 
 # Personal build log (explanations of every step) - not for the repo
 devlog/
@@ -21,6 +22,7 @@ __pycache__/
 # Generated data
 data/invoices/*.pdf
 data/out/
+data/inbox/
 evals/runs/
 .cache/
 
