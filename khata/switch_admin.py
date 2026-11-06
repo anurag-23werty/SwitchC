@@ -43,6 +43,18 @@ class GatewayAdmin:
         if r.status_code != 200:
             raise SwitchError(f"addressing policy for {agent_id}", r)
 
+    async def rooms_from_yaml(
+        self, text: str, inputs: dict[str, Any], template_name: str
+    ) -> dict[str, Any]:
+        """Provision a room (or a room group) from a Switch template, as the admin."""
+        r = await self.http.post(
+            "/rooms/from-yaml",
+            json={"yaml": text, "inputs": inputs, "template_name": template_name},
+        )
+        if r.status_code not in (200, 201):
+            raise SwitchError("rooms from yaml", r)
+        return r.json()
+
 
 def room_members_rule(room_ids: list[str]) -> dict[str, Any]:
     """Anyone in these rooms, person or agent, may address the agent.
