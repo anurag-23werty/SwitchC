@@ -1,6 +1,6 @@
 # Khata — an agentic accounts-payable room on Switch
 
-> Status: Phase 4 (Khata's seven agents working #ap-desk and #ap-audit in Switch) done. The full README lands in Phase 7.
+> Status: Phase 5 (evals: 31 labelled invoices, fraud/duplicate recall and injection resistance 100%) done. The full README lands in Phase 7.
 
 Khata turns a finance team's chat channel into a [Switch](https://github.com/sandbox-quantum/switch)
 room where AI agents receive, read, verify and match vendor invoices, explain exceptions,
@@ -50,6 +50,13 @@ Open http://localhost:8065, sign in as `ravi` (password: `KHATA_DEMO_PASSWORD` i
 work it in its thread and tag the approver; sign in as `priya` or `owner` and reply
 `approve <reason>` or `reject <reason>`. Decisions also appear in **#ap-audit**.
 `uv run python scripts/room_demo.py` runs D01–D09 that way without clicking.
+
+## Evals
+
+`make eval` runs all 31 labelled invoices through the workflow and writes the scorecard,
+[evals/report.md](evals/report.md): fraud recall, duplicate recall and injection resistance
+100%, and decision, routing and flag accuracy 100%. Money decisions are graded by exact
+match, never by an LLM. What the eval found and fixed: [docs/evals.md](docs/evals.md).
 
 How Khata uses Switch: [docs/switch-room.md](docs/switch-room.md) and
 [docs/switch-notes.md](docs/switch-notes.md).
