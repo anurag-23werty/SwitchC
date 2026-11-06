@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import operator
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict
 
@@ -88,8 +89,12 @@ class Deps:
     llm: LLM
 
 
-def say(agent: str, text: str) -> list[dict[str, str]]:
-    return [{"agent": agent, "text": text}]
+def say(agent: str, text: str, to: str | None = None) -> list[dict[str, str]]:
+    """A message from `agent`; `to` is the agent it hands off to (by name), if any."""
+    line = {"agent": agent, "text": text}
+    if to:
+        line["to"] = to
+    return [line]
 
 
 def build_graph(deps: Deps) -> StateGraph:
@@ -154,7 +159,7 @@ def build_graph(deps: Deps) -> StateGraph:
             "invoice_id": invoice_id,
             "log": say(
                 "khata-intake",
-                f"Received {s['file_path'].rsplit('/', 1)[-1]} "
+                f"Received {re.sub(r'^[0-9a-f]{12}_', '', s['file_path'].rsplit('/', 1)[-1])} "
                 f"({doc['pages']} page{'s' if doc['pages'] != 1 else ''}).",
             ),
         }
@@ -215,7 +220,11 @@ def build_graph(deps: Deps) -> StateGraph:
         info = await gw.call("analyst", "get_invoice", invoice_id=inv)
         return {
             "extraction": _j({**record, "vendor_flags": saved["flags"]}),
-            "log": say("khata-intake", msg.extraction_line(info, record)),
+            "log": say(
+                "khata-intake",
+                msg.extraction_line(info, record),
+                "khata-router" if rec.disagreements else None,
+            ),
         }
 
     def after_reconcile(s: InvoiceState) -> str:
@@ -231,11 +240,21 @@ def build_graph(deps: Deps) -> StateGraph:
         gst = await gw.call("intake", "validate_gst", invoice_id=inv)
         inj = await gw.call("intake", "detect_injection", invoice_id=inv)
         reports = {"validate_gst": gst, "detect_injection": inj}
-        if not set(gst["flags"]) & REJECT_FLAGS:
+        rejected = bool(set(gst["flags"]) & REJECT_FLAGS)
+        if not rejected:
             await advance(
                 inv, State.VALIDATED, "khata-intake", "GST and document checks done"
             )
-        return {"reports": _j(reports)}
+        found = list(dict.fromkeys(gst["flags"] + inj["flags"]))
+        text = "GST and document checks: " + (", ".join(found) or "passed") + "."
+        if rejected:
+            text += " Not worth matching: over to the Router."
+        return {
+            "reports": _j(reports),
+            "log": say(
+                "khata-intake", text, "khata-router" if rejected else "khata-verifier"
+            ),
+        }
 
     def after_validate(s: InvoiceState) -> str | list[str]:
         if (
@@ -269,7 +288,11 @@ def build_graph(deps: Deps) -> StateGraph:
             )
         if not past(await db_state(inv), "REVIEWED"):
             await advance(inv, State.REVIEWED, "khata-verifier", "Ready for routing")
-        return {"log": say("khata-verifier", msg.checks_line(s.get("reports", {})))}
+        return {
+            "log": say(
+                "khata-verifier", msg.checks_line(s.get("reports", {})), "khata-router"
+            )
+        }
 
     # -- Router ------------------------------------------------------------------
 
@@ -278,7 +301,13 @@ def build_graph(deps: Deps) -> StateGraph:
         return {
             "route": _j(r),
             "state": r["state"],
-            "log": say("khata-router", msg.route_line(r)),
+            "log": say(
+                "khata-router",
+                msg.route_line(r),
+                {"APPROVED": "khata-payer", "REJECTED": None}.get(
+                    r["state"], "khata-analyst"
+                ),
+            ),
         }
 
     def after_route(s: InvoiceState) -> str:
@@ -313,7 +342,7 @@ def build_graph(deps: Deps) -> StateGraph:
             if review.note
             else "No analysis available (" + "; ".join(review.errors) + ")."
         )
-        return {"review": _j(out), "log": say("khata-analyst", text)}
+        return {"review": _j(out), "log": say("khata-analyst", text, "khata-auditor")}
 
     async def auditor(s: InvoiceState) -> dict:
         inv = s["invoice_id"]
@@ -361,7 +390,7 @@ def build_graph(deps: Deps) -> StateGraph:
                     "errors": review.errors,
                 }
             ),
-            "log": say("khata-auditor", text),
+            "log": say("khata-auditor", text, "khata-router"),
         }
 
     # -- The approval gate -----------------------------------------------------------
@@ -431,7 +460,11 @@ def build_graph(deps: Deps) -> StateGraph:
             "decision_error": None,
             "last_decision": _j(res),
             "state": res["state"],
-            "log": say("khata-router", text),
+            "log": say(
+                "khata-router",
+                text,
+                "khata-payer" if res["state"] == "APPROVED" else None,
+            ),
         }
 
     async def after_human(s: InvoiceState) -> str:

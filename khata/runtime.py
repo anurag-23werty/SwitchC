@@ -13,6 +13,7 @@ approval survives a restart; `make seed` resets both together.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -31,6 +32,8 @@ from khata.llm import LLM, PromptGuard, endpoints_from_settings
 from khata.policy import ToolGateway
 from khata.tools import Toolbox
 
+OnLog = Callable[[int | None, dict[str, str]], Awaitable[None]]
+
 
 @dataclass
 class Outcome:
@@ -46,8 +49,9 @@ class Outcome:
 
 
 class Khata:
-    def __init__(self, pool, cp_pool, llm, guard, graph) -> None:
+    def __init__(self, pool, cp_pool, llm, guard, graph, gw) -> None:
         self.pool = pool
+        self.gw = gw  # the ToolGateway: callers outside the graph use it too
         self._cp_pool = cp_pool
         self.llm = llm
         self.guard = guard
@@ -106,7 +110,7 @@ class Khata:
             )
             gw = ToolGateway(pool, box.as_dict())
             graph = build_graph(Deps(pool, gw, llm)).compile(checkpointer=saver)
-            yield cls(pool, cp_pool, llm, guard, graph)
+            yield cls(pool, cp_pool, llm, guard, graph, gw)
         finally:
             if own_llm:
                 await llm.aclose()
@@ -117,11 +121,21 @@ class Khata:
 
     # -- running ------------------------------------------------------------------
 
-    async def _run(self, thread: str, payload: Any) -> Outcome:
+    async def _run(self, thread: str, payload: Any, on_log: OnLog | None) -> Outcome:
+        """Run until the gate or the end. `on_log(invoice_id, line)` hears each agent
+        message as its node finishes, so a room can show the work as it happens."""
         config = {"configurable": {"thread_id": thread}}
         before = await self.graph.aget_state(config)
         seen = len(before.values.get("log", [])) if before.values else 0
-        await self.graph.ainvoke(payload, config)
+        invoice_id = before.values.get("invoice_id") if before.values else None
+        async for chunk in self.graph.astream(payload, config, stream_mode="updates"):
+            for node, update in chunk.items():
+                if node.startswith("__") or not isinstance(update, dict):
+                    continue
+                invoice_id = update.get("invoice_id", invoice_id)
+                if on_log is not None:
+                    for line in update.get("log") or []:
+                        await on_log(invoice_id, line)
         return await self.outcome(thread, since=seen)
 
     async def outcome(self, thread: str, since: int = 0) -> Outcome:
@@ -154,6 +168,7 @@ class Khata:
         *,
         room_id: str | None = None,
         thread_id: str | None = None,
+        on_log: OnLog | None = None,
     ) -> Outcome:
         """Start a run for a received document. Returns at the approval gate or the end."""
         path = Path(file_path)
@@ -162,6 +177,7 @@ class Khata:
         return await self._run(
             f"inv-{uuid.uuid4()}",
             {"file_path": str(path), "room_id": room_id, "thread_id": thread_id},
+            on_log,
         )
 
     async def thread_for(self, invoice_id: int) -> str:
@@ -182,6 +198,7 @@ class Khata:
         decision: str,
         reason: str,
         message_id: str | None = None,
+        on_log: OnLog | None = None,
     ) -> Outcome:
         """Resume a paused run with a person's reply. Khata checks they may make it."""
         thread = await self.thread_for(invoice_id)
@@ -196,11 +213,29 @@ class Khata:
             "reason": reason,
             "message_id": message_id,
         }
-        return await self._run(thread, Command(resume=reply))
+        return await self._run(thread, Command(resume=reply), on_log)
 
-    async def retry(self, invoice_id: int) -> Outcome:
+    async def retry(self, invoice_id: int, on_log: OnLog | None = None) -> Outcome:
         """Re-run a run that stopped on an error (e.g. both LLM providers down)."""
-        return await self._run(await self.thread_for(invoice_id), None)
+        return await self._run(await self.thread_for(invoice_id), None, on_log)
+
+    async def unfinished(self) -> list[int]:
+        """Invoices whose run stopped before the gate or the end (a crash, an outage)."""
+        async with self.pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT id, graph_thread_id FROM invoices WHERE graph_thread_id IS NOT NULL "
+                    "AND state NOT IN ('REJECTED', 'PAYMENT_DRAFTED') ORDER BY id"
+                )
+            ).fetchall()
+        out = []
+        for r in rows:
+            snap = await self.graph.aget_state(
+                {"configurable": {"thread_id": r["graph_thread_id"]}}
+            )
+            if snap.next and not any(t.interrupts for t in snap.tasks):
+                out.append(r["id"])
+        return out
 
     async def pending(self) -> list[Outcome]:
         """Every run paused at the approval gate."""

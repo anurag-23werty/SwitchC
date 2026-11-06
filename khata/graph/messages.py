@@ -41,13 +41,21 @@ def extraction_line(inv: dict[str, Any], rec: dict[str, Any]) -> str:
     )
 
 
+VERIFIER_CHECKS = ("three_way_match", "check_duplicate", "check_bank_change")
+
+
 def checks_line(reports: dict[str, Any]) -> str:
+    """The Verifier's own three checks (Intake reports GST and injection)."""
     flagged = [
-        f"{name}: {', '.join(dict.fromkeys(r['flags']))}"
-        for name, r in reports.items()
-        if r["flags"]
+        f"{name}: {', '.join(dict.fromkeys(reports[name]['flags']))}"
+        for name in VERIFIER_CHECKS
+        if name in reports and reports[name]["flags"]
     ]
-    return "Checks: " + ("; ".join(flagged) if flagged else "all passed") + "."
+    return (
+        "PO/GRN match, duplicate and bank checks: "
+        + ("; ".join(flagged) if flagged else "all passed")
+        + "."
+    )
 
 
 def route_line(route: dict[str, Any]) -> str:

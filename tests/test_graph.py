@@ -113,16 +113,30 @@ async def test_rejected_and_auto_invoices_spend_no_review_calls(demo, fake):
         assert "review" not in demo[gid]["final"].values
 
 
-async def test_agents_speak_in_order(demo):
-    agents = [line["agent"] for line in demo["D03"]["first"].log]
-    assert agents == [
-        "khata-intake",
-        "khata-intake",
-        "khata-verifier",
-        "khata-router",
-        "khata-analyst",
-        "khata-auditor",
+async def test_agents_speak_in_order_and_hand_off_by_name(demo):
+    lines = demo["D03"]["first"].log
+    assert [(ln["agent"], ln.get("to")) for ln in lines] == [
+        ("khata-intake", None),
+        ("khata-intake", None),
+        ("khata-intake", "khata-verifier"),
+        ("khata-verifier", "khata-router"),
+        ("khata-router", "khata-analyst"),
+        ("khata-analyst", "khata-auditor"),
+        ("khata-auditor", "khata-router"),
     ]
+    after = demo["D03"]["final"].log
+    assert [(ln["agent"], ln.get("to")) for ln in after] == [
+        ("khata-router", "khata-payer"),
+        ("khata-payer", None),
+    ]
+
+
+async def test_rejected_at_gst_goes_straight_to_the_router(demo):
+    lines = demo["D06"]["final"].log
+    assert ("khata-intake", "khata-router") in [
+        (ln["agent"], ln.get("to")) for ln in lines
+    ]
+    assert "khata-verifier" not in [ln["agent"] for ln in lines]
 
 
 async def test_every_llm_call_is_logged_with_the_invoice(demo, pool):
