@@ -1,0 +1,30 @@
+# Khata: one `docker compose up` brings up Switch (core + Mattermost + Gateway)
+# and Khata's own database.
+#
+# Switch's stack is the upstream standalone compose file, pinned by
+# SWITCH_VERSION in switch/stack/.env (create it with `make switch-env`).
+include:
+  - path: switch/stack/docker-compose.yml
+    env_file: switch/stack/.env
+
+services:
+  # Khata's system of record. Separate from Switch's own Postgres on purpose:
+  # Switch owns rooms and messages, Khata owns invoices, decisions and the ledger.
+  khata-db:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "127.0.0.1:${KHATA_DB_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: khata
+      POSTGRES_PASSWORD: ${KHATA_DB_PASSWORD:-khata}
+      POSTGRES_DB: khata
+    volumes:
+      - khatadata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U khata -d khata"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  khatadata:
