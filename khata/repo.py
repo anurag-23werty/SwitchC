@@ -55,6 +55,8 @@ async def get_policy(conn: AsyncConnection) -> Policy:
         duplicate_window_days=int(p["duplicate_window_days"]),
         arithmetic_tolerance=Decimal(p["arithmetic_tolerance"]),
         approvers=p["approvers"],
+        min_extraction_confidence=Decimal(p.get("min_extraction_confidence", "0.70")),
+        injection_score_threshold=Decimal(p.get("injection_score_threshold", "0.90")),
     )
 
 

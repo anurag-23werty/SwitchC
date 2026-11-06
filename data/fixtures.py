@@ -172,6 +172,10 @@ POLICY_V1 = {
     "bank_change": {"route": "owner", "hard_stop": True},
     "first_time_vendor_route": "manager",
     "approvers": {"finance_manager": "priya", "owner": "owner"},
+    # Below this, an agreed extraction still goes to a person (LOW_CONFIDENCE).
+    "min_extraction_confidence": "0.70",
+    # Prompt Guard score at or above this is treated as an injection attempt.
+    "injection_score_threshold": "0.90",
 }
 
 

@@ -22,8 +22,17 @@ class Settings(BaseSettings):
 
     groq_api_key: str = ""
     groq_model: str = ""
+    # A different model family on Groq: the second reader's last resort.
+    groq_secondary_model: str = "qwen/qwen3.8-27b"
+    groq_guard_model: str = "meta-llama/llama-prompt-guard-2-86m"
     openrouter_api_key: str = ""
     openrouter_model: str = ""
+    # Tried in order when the free model above is rate-limited upstream.
+    openrouter_fallback_models: str = (
+        "nvidia/nemotron-3.5-super-vl:free,xingchen-agi/xing4.0-29b-a4b:free"
+    )
+    llm_cache_dir: Path = ROOT / ".cache" / "llm"
+    payments_dir: Path = ROOT / "data" / "out" / "payments"
 
     agent_keys_path: Path = ROOT / ".khata-agents.json"
 

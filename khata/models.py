@@ -165,6 +165,8 @@ class Policy(BaseModel):
     duplicate_window_days: int
     arithmetic_tolerance: Decimal
     approvers: dict[str, str]  # role -> username
+    min_extraction_confidence: Decimal = Decimal("0.70")
+    injection_score_threshold: Decimal = Decimal("0.90")
 
 
 class RouteDecision(BaseModel):

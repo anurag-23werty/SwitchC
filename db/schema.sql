@@ -121,6 +121,7 @@ CREATE TABLE invoices (
     file_sha256            char(64),
     switch_room_id         text,
     switch_thread_id       text,                        -- the invoice's thread in the room
+    graph_thread_id        text UNIQUE,                 -- the LangGraph run (checkpointer thread)
     route                  text,                        -- set by route_approval
     approval_steps         text[] NOT NULL DEFAULT '{}', -- e.g. {manager,owner}
     approvers              text[] NOT NULL DEFAULT '{}', -- usernames for those steps
@@ -226,4 +227,36 @@ CREATE TABLE payment_lines (
     beneficiary_name     text NOT NULL,
     beneficiary_account  text NOT NULL,
     ifsc                 char(11) NOT NULL
+);
+
+-- What the LLM agents wrote about an invoice (Analyst notes, Auditor verdicts,
+-- extraction readings). Advice for people; never an input to a money decision.
+CREATE TABLE agent_notes (
+    id          bigserial PRIMARY KEY,
+    invoice_id  int NOT NULL REFERENCES invoices(id),
+    agent       text NOT NULL,
+    kind        text NOT NULL,          -- reading | analysis | audit
+    content     jsonb NOT NULL,
+    provider    text,
+    model       text,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX agent_notes_invoice ON agent_notes (invoice_id, id);
+
+-- Every LLM request, including cache hits and failures.
+CREATE TABLE llm_calls (
+    id            bigserial PRIMARY KEY,
+    invoice_id    int REFERENCES invoices(id),
+    agent         text NOT NULL,
+    provider      text,
+    model         text,
+    cache_key     char(64) NOT NULL,
+    cached        boolean NOT NULL,
+    ok            boolean NOT NULL,
+    attempts      int NOT NULL DEFAULT 1,
+    error         text,
+    prompt_tokens int,
+    output_tokens int,
+    duration_ms   int,
+    created_at    timestamptz NOT NULL DEFAULT now()
 );

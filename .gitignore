@@ -22,6 +22,7 @@ __pycache__/
 data/invoices/*.pdf
 data/out/
 evals/runs/
+.cache/
 
 # OS / editors
 .DS_Store
