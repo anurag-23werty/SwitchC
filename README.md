@@ -1,6 +1,6 @@
 # Khata — an agentic accounts-payable room on Switch
 
-> Status: Phase 1 (data foundation) done. The full README lands in Phase 7.
+> Status: Phase 2 (deterministic checks, policy engine, MCP tools) done. The full README lands in Phase 7.
 
 Khata turns a finance team's chat channel into a [Switch](https://github.com/sandbox-quantum/switch)
 room where AI agents receive, read, verify and match vendor invoices, explain exceptions,
@@ -23,7 +23,12 @@ make test
 ```
 
 The demo business, vendors, approval policy and all 31 labelled invoices are described
-in [docs/demo-data.md](docs/demo-data.md).
+in [docs/demo-data.md](docs/demo-data.md). The checks, approval policy, permissions and MCP
+tools are in [docs/tools-and-policy.md](docs/tools-and-policy.md).
+
+```sh
+make mcp AGENT=analyst   # Khata's tools over MCP, only the ones that agent may call
+```
 
 Open Mattermost at http://localhost:8065 and sign in as `user` (password:
 `MATTERMOST_USER_PASSWORD` in `switch/stack/.env`). In the `khata-hello` channel, send
