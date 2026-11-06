@@ -15,11 +15,11 @@ the per-agent permissions, and the MCP server that exposes it all.
 | Duplicates | `duplicate.py` `check_duplicate` | `DUPLICATE`, `POSSIBLE_DUPLICATE` | Same vendor + invoice number (ignoring case and spaces) → duplicate. Same vendor + same total within 7 days (policy) → possible duplicate. Rejected invoices don't count, so a vendor can reissue |
 | First-time vendor | in the `check_duplicate` tool | `FIRST_TIME_VENDOR` | No approved invoice from this vendor yet |
 | Bank change | `bank.py` `check_bank_change` | `BANK_CHANGE` | Account or IFSC on the invoice ≠ vendor master. Accounts are masked in messages; the callback phone comes from the master |
-| Prompt injection | `injection.py` `detect_injection` | `INJECTION` | 9 pattern families aimed at *machines* (override instructions, addressing an AI, claimed approvals, "mark as approved", "release payment immediately", "skip checks", "do not flag", role-play). Text is first normalised (NFKC, zero-width characters removed) to undo disguises. Social engineering aimed at *people* ("our bank details have changed") is deliberately not matched; the bank check catches it |
+| Prompt injection | `injection.py` `detect_injection` | `INJECTION` | 9 pattern families aimed at *machines* (override instructions, addressing an AI, claimed approvals, "mark as approved", "release payment immediately", "skip checks", "do not flag", role-play). Text is first normalised (NFKC, zero-width characters removed) to undo disguises. Social engineering aimed at *people* ("our bank details have changed") is deliberately not matched; the bank check catches it. With an LLM key, Llama Prompt Guard 2 also scores the text (see [agent-runtime.md](agent-runtime.md)) |
 
 Vendor identification on extraction adds `VENDOR_UNKNOWN` (not in master) or
-`GSTIN_MISMATCH` (a valid GSTIN that isn't the master's). Phase 3 adds
-`EXTRACTION_DISAGREEMENT` and `LOW_CONFIDENCE` from the dual-model vote.
+`GSTIN_MISMATCH` (a valid GSTIN that isn't the master's). The two-model reading
+adds `EXTRACTION_DISAGREEMENT` and `LOW_CONFIDENCE` (see [agent-runtime.md](agent-runtime.md)).
 
 ## The approval router (`khata/approval.py`)
 
@@ -77,7 +77,7 @@ attempt (allowed or denied) to `tool_calls` with args, result, error and duratio
 
 | Agent | Tools |
 |---|---|
-| dispatcher | `classify_input` (Phase 3) |
+| dispatcher | `classify_input` |
 | intake | `extract_invoice`, `validate_gst`, `detect_injection` |
 | verifier | `three_way_match`, `check_duplicate`, `check_bank_change` |
 | analyst | `search_vendor_knowledge`, `get_invoice` |

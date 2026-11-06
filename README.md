@@ -1,6 +1,6 @@
 # Khata — an agentic accounts-payable room on Switch
 
-> Status: Phase 2 (deterministic checks, policy engine, MCP tools) done. The full README lands in Phase 7.
+> Status: Phase 3 (LangGraph agent runtime with live LLMs, approval gate that survives restarts) done. The full README lands in Phase 7.
 
 Khata turns a finance team's chat channel into a [Switch](https://github.com/sandbox-quantum/switch)
 room where AI agents receive, read, verify and match vendor invoices, explain exceptions,
@@ -28,7 +28,15 @@ tools are in [docs/tools-and-policy.md](docs/tools-and-policy.md).
 
 ```sh
 make mcp AGENT=analyst   # Khata's tools over MCP, only the ones that agent may call
+make demo                # D01-D09 through the agent workflow with live LLMs (no Switch yet)
+uv run khata pending     # approvals waiting for a person
+uv run khata decide 10 --as priya approve Matches PO and goods received
 ```
+
+How the agents run (two-model extraction, Analyst and Auditor on different
+providers, the approval gate, retries, Prompt Guard) is in
+[docs/agent-runtime.md](docs/agent-runtime.md). LLM keys go in `.env`
+(`GROQ_API_KEY`, `OPENROUTER_API_KEY`; both free, no card).
 
 Open Mattermost at http://localhost:8065 and sign in as `user` (password:
 `MATTERMOST_USER_PASSWORD` in `switch/stack/.env`). In the `khata-hello` channel, send
