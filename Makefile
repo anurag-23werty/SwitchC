@@ -1,6 +1,6 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve
+.PHONY: help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
@@ -15,6 +15,7 @@ help:
 	@echo "make demo        run D01-D09 through the agent workflow (live LLMs, no Switch)"
 	@echo "make pending     invoices paused at the approval gate"
 	@echo "make graph       print the workflow graph (Mermaid)"
+	@echo "make eval        all 31 labelled invoices through the workflow -> evals/report.md"
 	@echo "make test        run the test suite"
 
 switch-env:
@@ -68,6 +69,9 @@ pending:
 
 graph:
 	uv run python -m khata.graph.diagram
+
+eval:
+	uv run python -m evals.run
 
 test:
 	uv run pytest -q
