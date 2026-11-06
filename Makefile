@@ -1,6 +1,6 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: help switch-env env up down ps logs hello test seed invoices
+.PHONY: help switch-env env up down ps logs hello test seed invoices mcp
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
@@ -9,6 +9,7 @@ help:
 	@echo "make down        stop everything (data volumes are kept)"
 	@echo "make seed        rebuild Khata's database and generate the invoice PDFs + golden set"
 	@echo "make hello       run the Phase 0 smoke-test agent"
+	@echo "make mcp AGENT=analyst   run the MCP tool server for one agent (stdio)"
 	@echo "make test        run the test suite"
 
 switch-env:
@@ -44,6 +45,9 @@ invoices:
 
 hello:
 	uv run python scripts/hello_agent.py
+
+mcp:
+	uv run python -m mcp_server.server --agent $(AGENT)
 
 test:
 	uv run pytest -q
