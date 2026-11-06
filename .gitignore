@@ -1,0 +1,29 @@
+# Secrets
+.env
+switch/stack/.env
+.khata-agents.json
+
+# Personal build log (explanations of every step) - not for the repo
+devlog/
+
+# Upstream Switch source, cloned for reading only
+vendor/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Generated data
+data/invoices/*.pdf
+data/out/
+evals/runs/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
