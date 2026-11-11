@@ -204,15 +204,15 @@ async def test_room_documents_are_written_from_postgres(room):
     assert "khata-decisions-log" in created and updated
 
 
-async def test_non_pdf_is_declined_and_agent_posts_are_ignored(room):
+async def test_other_files_are_declined_and_agent_posts_are_ignored(room):
     await room.on_message(
         {
             "message_id": "x1",
             "sender_name": "ravi",
-            "attachments": [{"filename": "photo.jpg", "mxc": "test://x"}],
+            "attachments": [{"filename": "ledger.xlsx", "mxc": "test://x"}],
         }
     )
-    assert "only take invoices as PDF" in said(room, "x1")[-1][4]
+    assert "a PDF or a photo" in said(room, "x1")[-1][4]
     before = len(room.log)
     await room.on_message(
         {"message_id": "x2", "sender_name": "khata-router", "body": "hi"}

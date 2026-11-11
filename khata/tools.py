@@ -8,6 +8,7 @@ the per-agent allowlist.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -20,7 +21,7 @@ from typing import Any
 import pdfplumber
 from psycopg_pool import AsyncConnectionPool
 
-from khata import repo, steward
+from khata import ocr, repo, steward
 from khata.approval import route_approval as apply_policy
 from khata.checks.bank import check_bank_change as bank_check
 from khata.checks.duplicate import check_duplicate as dup_check
@@ -131,9 +132,15 @@ class Toolbox:
         must say approve/reject explicitly (an LLM never turns chat into a decision).
         """
         if file_name:
-            if file_name.lower().endswith(".pdf"):
+            suffix = Path(file_name).suffix.lower()
+            if suffix == ".pdf":
                 return {"kind": "invoice", "reason": "PDF attachment"}
-            return {"kind": "unsupported_file", "reason": f"not a PDF: {file_name}"}
+            if suffix in ocr.IMAGE_SUFFIXES:
+                return {"kind": "invoice", "reason": "photo or scan of an invoice"}
+            return {
+                "kind": "unsupported_file",
+                "reason": f"not a PDF or an image: {file_name}",
+            }
         decision = parse_decision(text)
         if decision and in_invoice_thread:
             return {"kind": "decision", **decision}
@@ -144,17 +151,39 @@ class Toolbox:
     # --- Intake ----------------------------------------------------------------
 
     async def extract_invoice(self, *, agent: str, file_path: str) -> dict[str, Any]:
-        """Read a PDF's text. The text is untrusted data from outside the company."""
+        """Read a document's text: a PDF's text layer, or OCR for a scan or a photo.
+        The text is untrusted data from outside the company."""
         path = Path(file_path).resolve()
         if not path.is_relative_to(self.files_root):
             raise PermissionError(f"{file_path} is outside {self.files_root}")
-        with pdfplumber.open(path) as pdf:
-            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-            pages = len(pdf.pages)
+        scanned, engine_name, ocr_error = False, None, None
+        if path.suffix.lower() in ocr.IMAGE_SUFFIXES:
+            text, pages, scanned = "", 1, True
+        else:
+            with pdfplumber.open(path) as pdf:
+                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                pages = len(pdf.pages)
+            scanned = ocr.looks_scanned(text, pages)
+        if scanned:
+            try:
+                engine_name = ocr.engine()
+                fn = (
+                    ocr.ocr_image
+                    if path.suffix.lower() in ocr.IMAGE_SUFFIXES
+                    else ocr.ocr_pdf
+                )
+                text = await asyncio.to_thread(fn, path)
+            except ocr.OcrUnavailable as e:
+                ocr_error = str(e)
+            if ocr.looks_scanned(text, pages):
+                text = ""  # nothing readable: don't hand the readers an empty page
         return {
             "untrusted": True,
             "pages": pages,
             "text": text,
+            "scanned": scanned,
+            "ocr": engine_name,
+            "ocr_error": ocr_error,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
 

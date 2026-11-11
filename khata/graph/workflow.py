@@ -75,6 +75,8 @@ class InvoiceState(TypedDict, total=False):
     decision_error: str | None
     last_decision: dict[str, Any] | None
     payment: dict[str, Any]
+    scanned: bool
+    unreadable: bool
     proposal: dict[str, Any] | None
     state: str
     log: Annotated[list[dict[str, str]], operator.add]
@@ -148,6 +150,7 @@ def build_graph(deps: Deps) -> StateGraph:
         if row:  # a replay after a crash: the row already exists
             return {"invoice_id": row["id"]}
         doc = await gw.call("intake", "extract_invoice", file_path=s["file_path"])
+        name = re.sub(r"^[0-9a-f]{12}_", "", s["file_path"].rsplit("/", 1)[-1])
         invoice_id = await ingest(
             pool,
             file_path=s["file_path"],
@@ -157,13 +160,30 @@ def build_graph(deps: Deps) -> StateGraph:
             thread_id=s.get("thread_id"),
             graph_thread_id=graph_thread,
         )
+        received = (
+            f"Received {name} ({doc['pages']} page{'s' if doc['pages'] != 1 else ''})."
+        )
+        if doc.get("scanned") and not doc["text"]:
+            why = doc.get("ocr_error") or "OCR found no readable text"
+            reason = (
+                f"This is a scan or photo and I couldn't read it ({why}). Please ask the "
+                "vendor for the digital PDF and post that here. Nothing was decided or paid."
+            )
+            await advance(invoice_id, State.ON_HOLD, "khata-intake", reason)
+            return {
+                "invoice_id": invoice_id,
+                "unreadable": True,
+                "log": say("khata-intake", f"{received} {reason}"),
+            }
+        if doc.get("scanned"):
+            received += (
+                f" It's a scan, so I read it with OCR ({doc['ocr']}); a person will check "
+                "the numbers before anything is approved."
+            )
         return {
             "invoice_id": invoice_id,
-            "log": say(
-                "khata-intake",
-                f"Received {re.sub(r'^[0-9a-f]{12}_', '', s['file_path'].rsplit('/', 1)[-1])} "
-                f"({doc['pages']} page{'s' if doc['pages'] != 1 else ''}).",
-            ),
+            "scanned": bool(doc.get("scanned")),
+            "log": say("khata-intake", received),
         }
 
     async def read(s: InvoiceState) -> dict:
@@ -196,6 +216,9 @@ def build_graph(deps: Deps) -> StateGraph:
             ).fetchone()
             policy = await get_policy(conn)
         rec = reconcile(a, b, row["raw_text"], policy.min_extraction_confidence)
+        if s.get("scanned") and Flag.LOW_CONFIDENCE not in rec.flags:
+            rec.flags.append(Flag.LOW_CONFIDENCE)
+            rec.notes.append("Read from a scan by OCR: a person checks the numbers.")
         record = rec.readings_record(a, b)
         if row["state"] == "RECEIVED":
             saved = await save_extraction(
@@ -547,7 +570,9 @@ def build_graph(deps: Deps) -> StateGraph:
         lambda s: "ingest" if s["kind"] == "invoice" else END,
         ["ingest", END],
     )
-    g.add_edge("ingest", "read")
+    g.add_conditional_edges(
+        "ingest", lambda s: "done" if s.get("unreadable") else "read", ["read", "done"]
+    )
     g.add_edge("read", "reconcile")
     g.add_conditional_edges("reconcile", after_reconcile, ["validate", "route"])
     g.add_conditional_edges(

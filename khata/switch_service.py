@@ -34,7 +34,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from khata import liaison, repo, steward
+from khata import liaison, ocr, repo, steward
 from khata.config import ROOT, Settings
 from khata.money import inr
 from khata.runtime import Khata, Outcome
@@ -58,7 +58,7 @@ IGNORED_SENDERS = {"switch-admin", "system", "admin"}
 FEED_AGENTS = {ROUTER, PAYER}  # the Steward feeds its own proposal posts
 PROPOSAL_POST = re.compile(r"^\*\*Rule proposal #(\d+)\*\*")
 HELP = (
-    "I'm Khata's front desk. Post a vendor invoice as a PDF here and the team takes it "
+    "I'm Khata's front desk. Post a vendor invoice (a PDF, or a photo or scan) here and the team takes it "
     "from there, in its own thread. To decide an invoice the Router tags you on, reply "
     "in that thread with `approve <reason>` or `reject <reason>`."
 )
@@ -303,7 +303,7 @@ class KhataRoom:
                 )
                 if res["kind"] != "invoice":
                     await desk.post(
-                        f"@{sender} I only take invoices as PDF; `{att.get('filename')}` "
+                        f"@{sender} I take invoices as a PDF or a photo (JPG/PNG); `{att.get('filename')}` "
                         f"is {res['reason']}.",
                         thread,
                     )
@@ -426,7 +426,8 @@ class KhataRoom:
         pdfs = [
             a
             for a in p.get("attachments") or []
-            if (a.get("filename") or "").lower().endswith(".pdf")
+            if Path(a.get("filename") or "").suffix.lower()
+            in {".pdf", *ocr.IMAGE_SUFFIXES}
         ]
         intent = liaison.classify(body, bool(pdfs))
         await self._set_kind(msg_id, f"vendor_{intent.kind}", None)
@@ -435,7 +436,7 @@ class KhataRoom:
                 data = await self.agents[LIAISON].download_media(self.inbox, att["mxc"])
                 await self.agents[LIAISON].upload_media(
                     self.desk,
-                    [(att["filename"], data, "application/pdf")],
+                    [(att["filename"], data, att.get("mimetype") or "application/pdf")],
                     liaison.upload_caption(contact, att["filename"]),
                     None,
                 )
