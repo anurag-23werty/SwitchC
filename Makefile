@@ -1,6 +1,6 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval
+.PHONY: help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
@@ -16,6 +16,9 @@ help:
 	@echo "make pending     invoices paused at the approval gate"
 	@echo "make graph       print the workflow graph (Mermaid)"
 	@echo "make eval        all 31 labelled invoices through the workflow -> evals/report.md"
+	@echo "make dashboard   read-only ledger at http://127.0.0.1:8088"
+	@echo "make steward-demo  D03, D04 -> rule proposal -> owner approves -> S01 auto-approved"
+	@echo "make image       build the Khata container image (deploy/ for the VM setup)"
 	@echo "make test        run the test suite"
 
 switch-env:
@@ -72,6 +75,15 @@ graph:
 
 eval:
 	uv run python -m evals.run
+
+dashboard:
+	uv run khata dashboard
+
+steward-demo:
+	uv run khata steward-demo
+
+image:
+	docker build -t khata:local .
 
 test:
 	uv run pytest -q

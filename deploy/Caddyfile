@@ -1,0 +1,21 @@
+# HTTPS for a single-VM Khata deployment. Caddy gets and renews Let's Encrypt
+# certificates by itself; point three DNS names at the VM first (or use
+# <ip>.sslip.io names, which need no DNS setup), and open ports 80 and 443.
+{
+	email {$ACME_EMAIL}
+}
+
+# Mattermost: where the finance team works in #ap-desk and #ap-audit.
+chat.{$KHATA_DOMAIN} {
+	reverse_proxy mattermost:8065
+}
+
+# Switch's operator dashboard (agents, rooms, messaging apps such as Telegram).
+switch.{$KHATA_DOMAIN} {
+	reverse_proxy gateway:3000
+}
+
+# Khata's read-only ledger. The app itself requires KHATA_DASHBOARD_TOKEN.
+ledger.{$KHATA_DOMAIN} {
+	reverse_proxy khata-dashboard:8088
+}

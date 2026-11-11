@@ -1,0 +1,74 @@
+# Single-VM deployment: Switch + Mattermost + Khata + Caddy (HTTPS), one compose.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.deploy.yml \
+#     --profile collab --profile gateway --profile deploy up -d --build
+#
+# Needs in .env: KHATA_DOMAIN, ACME_EMAIL, KHATA_DASHBOARD_TOKEN, plus the usual
+# Khata settings (LLM keys, SWITCH_REGISTRATION_TOKEN, ...). See docs/deploy.md.
+# Everything listens on the internal network; only Caddy publishes 80/443.
+services:
+  mattermost:
+    environment:
+      MM_SERVICESETTINGS_SITEURL: https://chat.${KHATA_DOMAIN:?set KHATA_DOMAIN in .env}
+
+  khata-serve:
+    build: .
+    image: khata:local
+    profiles: [deploy]
+    env_file: .env
+    environment: &khata-env
+      SWITCH_API_URL: http://switch:8000
+      SWITCH_GATEWAY_URL: http://switch:8000
+      KHATA_DATABASE_URL: postgresql://khata:${KHATA_DB_PASSWORD:-khata}@khata-db:5432/khata
+      KHATA_MATTERMOST_URL: http://mattermost:8065
+      KHATA_SWITCH_STATE: /app/state/khata-switch.json
+      AGENT_KEYS_PATH: /app/state/khata-agents.json
+      KHATA_STACK_ENV: /app/switch-stack.env
+      LLM_CACHE_DIR: /app/state/llm-cache
+    volumes:
+      - khatastate:/app/state
+      - khatapayments:/app/data/out
+      - ./switch/stack/.env:/app/switch-stack.env:ro
+    depends_on:
+      switch:
+        condition: service_started
+      khata-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  khata-dashboard:
+    image: khata:local
+    profiles: [deploy]
+    command: ["khata", "dashboard", "--host", "0.0.0.0", "--port", "8088"]
+    environment:
+      KHATA_DATABASE_URL: postgresql://khata:${KHATA_DB_PASSWORD:-khata}@khata-db:5432/khata
+      KHATA_DASHBOARD_TOKEN: ${KHATA_DASHBOARD_TOKEN:?set KHATA_DASHBOARD_TOKEN in .env}
+      SWITCH_REGISTRATION_TOKEN: unused-by-the-dashboard
+    volumes:
+      - khatastate:/app/state:ro
+    depends_on:
+      khata-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10.0
+    profiles: [deploy]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KHATA_DOMAIN: ${KHATA_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on: [mattermost, gateway, khata-dashboard]
+    restart: unless-stopped
+
+volumes:
+  khatastate:
+  khatapayments:
+  caddydata:
+  caddyconfig:
