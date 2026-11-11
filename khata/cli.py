@@ -262,6 +262,113 @@ async def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _admin_conn():
+    import psycopg
+
+    from khata.config import get_settings
+
+    return psycopg.connect(get_settings().khata_database_url)
+
+
+async def cmd_init(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from khata.config import get_settings
+    from khata.migrate import migrate_url
+    from khata.onboarding import OnboardingError, apply_config, load_config
+
+    try:
+        cfg = load_config(Path(args.config))
+        new = migrate_url(get_settings().khata_database_url)
+        if new:
+            print("schema: applied " + ", ".join(new))
+        with _admin_conn() as conn:
+            for line in apply_config(conn, cfg, args.user):
+                print(line)
+    except OnboardingError as e:
+        print(f"Not applied: {e}")
+        return 1
+    print(
+        "Next: import vendors (and POs/GRNs if you use them), then `khata setup-switch`."
+    )
+    return 0
+
+
+async def cmd_import(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from khata import onboarding as ob
+
+    kinds = {
+        "vendors": (ob.VENDOR_COLS, ob.import_vendors),
+        "pos": (ob.PO_COLS, ob.import_pos),
+        "grns": (ob.GRN_COLS, ob.import_grns),
+        "contacts": (ob.CONTACT_COLS, ob.import_contacts),
+    }
+    cols, fn = kinds[args.kind]
+    try:
+        rows = ob.read_csv(Path(args.file), cols)
+        with _admin_conn() as conn:
+            if args.kind == "vendors":
+                rep = fn(
+                    conn, rows, args.user, allow_bank_change=args.allow_bank_change
+                )
+            else:
+                rep = fn(conn, rows, args.user)
+    except ob.OnboardingError as e:
+        print(f"Not imported: {e}")
+        return 1
+    print(f"{args.kind}: " + "\n".join(rep.lines()))
+    return 1 if rep.refused else 0
+
+
+async def cmd_vendors(args: argparse.Namespace) -> int:
+    with _admin_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, name, gstin, phone, bank_account, ifsc, active, bank_verified_by "
+            "FROM khata.vendors ORDER BY code"
+        ).fetchall()
+    if not rows:
+        print("No vendors yet: `khata import vendors vendors.csv --as <you>`.")
+    for code, name, gstin, phone, acct, ifsc, active, verified in rows:
+        print(
+            f"{code:<8} {name[:32]:<32} {gstin}  {phone:<18} xxxx{acct[-4:]} {ifsc}"
+            f"{'' if active else '  (inactive)'}{f'  bank verified by {verified}' if verified else ''}"
+        )
+    return 0
+
+
+async def cmd_policy(args: argparse.Namespace) -> int:
+    import json
+
+    from khata.onboarding import OnboardingError, set_policy
+
+    if args.action == "show":
+        with _admin_conn() as conn:
+            row = conn.execute(
+                "SELECT version, policy FROM khata.rules WHERE active"
+            ).fetchone()
+        if row is None:
+            print("No policy yet: run `khata init`.")
+            return 1
+        print(f"policy v{row[0]}")
+        print(json.dumps(row[1], indent=2))
+        return 0
+    try:
+        changes = dict(kv.split("=", 1) for kv in args.changes)
+    except ValueError:
+        print("Use key=value, e.g. auto_approve_below=5000")
+        return 2
+    try:
+        with _admin_conn() as conn:
+            v = set_policy(conn, changes, args.user, args.reason or "")
+    except OnboardingError as e:
+        print(f"Not changed: {e}")
+        return 1
+    print(f"Policy v{v} is active. The previous version is kept.")
+    return 0
+
+
 async def cmd_db(args: argparse.Namespace) -> int:
     from khata.config import get_settings
     from khata.migrate import applied, available, migrate_url, pending_url
@@ -327,6 +434,35 @@ def main(argv: list[str] | None = None) -> None:
     r = sub.add_parser("retry", help="re-run a run that stopped on an error")
     r.add_argument("invoice", type=int)
     r.set_defaults(fn=cmd_retry)
+    ini = sub.add_parser(
+        "init", help="set Khata up for your business from a config file"
+    )
+    ini.add_argument("config", help="khata.yaml (see examples/khata.yaml)")
+    ini.add_argument(
+        "--as", dest="user", required=True, help="your username (an owner)"
+    )
+    ini.set_defaults(fn=cmd_init)
+    imp = sub.add_parser(
+        "import", help="import vendors, POs, GRNs or vendor contacts from CSV"
+    )
+    imp.add_argument("kind", choices=["vendors", "pos", "grns", "contacts"])
+    imp.add_argument("file")
+    imp.add_argument("--as", dest="user", required=True)
+    imp.add_argument(
+        "--allow-bank-change",
+        action="store_true",
+        help="owner only, after calling the vendor on the number on file",
+    )
+    imp.set_defaults(fn=cmd_import)
+    sub.add_parser("vendors", help="the vendor master").set_defaults(fn=cmd_vendors)
+    pol = sub.add_parser("policy", help="show or change the approval policy (owner)")
+    pol.add_argument("action", choices=["show", "set"])
+    pol.add_argument(
+        "changes", nargs="*", help="key=value, e.g. auto_approve_below=5000"
+    )
+    pol.add_argument("--as", dest="user")
+    pol.add_argument("--reason")
+    pol.set_defaults(fn=cmd_policy)
     dbp = sub.add_parser("db", help="schema migrations")
     dbp.add_argument("action", choices=["migrate", "status"])
     dbp.set_defaults(fn=cmd_db)

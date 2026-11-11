@@ -1,0 +1,4 @@
+code,name,gstin,address,phone,email,bank_name,bank_account,ifsc,first_seen
+NOV,Nova Packaging Pvt Ltd,29AAFCN5678P1ZF,"Plot 8, KIADB, Dobbaspet, Karnataka 562111",+91 80 4000 1111,accounts@novapack.example,Canara Bank,0412201005555,CNRB0000412,2025-04-01
+SHI,Shivam Steel Traders,27AAGFS4321Q1ZR,"Iron Market, Masjid Bunder, Mumbai 400009",+91 22 4000 2222,billing@shivamsteel.example,Bank of Maharashtra,60234500001,MAHB0000123,2025-06-15
+TAM,Tamil Electricals,33AAJCT8765R1ZA,"Ritchie Street, Chennai 600002",+91 44 4000 3333,invoices@tamilelec.example,Indian Bank,6543210987,IDIB000T012,2025-09-01

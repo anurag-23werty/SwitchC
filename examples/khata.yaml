@@ -1,0 +1,30 @@
+# Khata for your business. Copy this file, fill it in, then:
+#   uv run khata init khata.yaml --as <owner username>
+# Re-run it after edits; only the owner can, and a policy change becomes a new version.
+# All names, GSTINs and accounts below are fictional examples.
+
+company:
+  name: Kaveri Home Products Pvt Ltd
+  gstin: 29AABCK1234M1ZG          # your GSTIN; the state code (29) decides IGST vs CGST+SGST
+  address: 14, 2nd Cross, Peenya Industrial Area, Bengaluru 560058
+  bank_name: HDFC Bank             # the account payments are made from
+  bank_account: "50200012345678"
+  ifsc: HDFC0001234
+
+# Usernames must match the people's usernames in your chat (Mattermost) workspace.
+people:
+  - { username: meera, display_name: Meera Iyer, role: owner, email: meera@example.com }
+  - { username: arun, display_name: Arun Nair, role: finance_manager, email: arun@example.com }
+  - { username: divya, display_name: Divya Rao, role: clerk, email: divya@example.com }
+
+policy:
+  auto_approve_below: 10000      # clean invoices under this are approved automatically
+  manager_up_to: 100000          # above this, the owner approves after the finance manager
+  variance_pct: 2.0              # price/quantity variance tolerated against PO/GRN
+  duplicate_window_days: 7       # same amount from a vendor within this many days = possible duplicate
+  arithmetic_tolerance: 1.00     # rupees of rounding allowed
+  po_required: false             # true if every invoice must quote a PO in Khata
+  grn_required: false            # true if goods must be received (GRN) before an invoice is paid
+  approvers:
+    finance_manager: arun
+    owner: meera
