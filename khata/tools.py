@@ -394,7 +394,8 @@ class Toolbox:
         async with self.pool.connection() as conn, conn.transaction():
             row = await (
                 await conn.execute(
-                    "SELECT state, approval_steps, total FROM invoices WHERE id = %s FOR UPDATE",
+                    "SELECT state, approval_steps, total, vendor_id FROM invoices "
+                    "WHERE id = %s FOR UPDATE",
                     (invoice_id,),
                 )
             ).fetchone()
@@ -408,6 +409,13 @@ class Toolbox:
             who = await repo.person(conn, username)
             if who is None:
                 raise DecisionRefused(f"{username} is not in the finance team")
+            if decision == "approve" and row["vendor_id"] is None:
+                raise DecisionRefused(
+                    "this vendor isn't in the vendor master, so there's no verified bank "
+                    "account to pay. Reject this one, add the vendor with `khata import "
+                    "vendors` (bank details from your own records, not from the invoice), "
+                    "then post the invoice again"
+                )
             steps: list[str] = row["approval_steps"]
             done = [
                 d["approval_step"]

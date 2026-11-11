@@ -134,3 +134,38 @@ def test_only_the_owner_changes_the_policy_and_each_change_is_a_version(conn):
         == "5000"
     )
     assert one(conn, "SELECT count(*) FROM khata.rules") == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_vendors_invoice_cannot_be_approved_only_rejected(
+    conn, tmp_path
+):
+    """Approving it would leave nothing to pay; Khata says what to do instead."""
+    from khata.db import make_pool
+    from khata.tools import DecisionRefused, Toolbox
+
+    inv = conn.execute(
+        """INSERT INTO khata.invoices (invoice_no, total, state, flags, approval_steps, approvers)
+           VALUES ('NEW/1', 5000, 'ON_HOLD', '{VENDOR_UNKNOWN}', '{manager}', '{arun}')
+           RETURNING id"""
+    ).fetchone()[0]
+    conn.commit()
+    url = get_settings().khata_database_url.rsplit("/", 1)[0] + "/" + DB
+    async with make_pool(url) as pool:
+        box = Toolbox(pool, files_root=tmp_path, payments_dir=tmp_path)
+        with pytest.raises(DecisionRefused, match="vendor master"):
+            await box.record_decision(
+                agent="router",
+                invoice_id=inv,
+                username="arun",
+                decision="approve",
+                reason="looks fine to me",
+            )
+        res = await box.record_decision(
+            agent="router",
+            invoice_id=inv,
+            username="arun",
+            decision="reject",
+            reason="new vendor, onboard first",
+        )
+    assert res["state"] == "REJECTED"
