@@ -172,4 +172,5 @@ exception for a vendor twice, it proposes a rule in #ap-desk, and the owner deci
 | An invoice thread says it couldn't finish | Reply `retry` in the thread once the cause (often an LLM limit) has passed |
 | Agents don't answer in the room | Is `make serve` running? `uv run khata -v serve` shows each connection |
 | "not in the finance team" when approving | The username isn't in `khata.yaml`; add them and re-run `khata init` and `khata setup-switch` |
+| An invoice from a new vendor is held (VENDOR_UNKNOWN) and can't be approved | Reject it, add the vendor to `vendors.csv` with bank details from your own records (not the invoice), `khata import vendors`, then post the invoice again |
 | Every invoice is held as LOW_CONFIDENCE | One of the two readers is failing (often a daily limit): check `uv run khata show <id>` |
