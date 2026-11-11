@@ -223,7 +223,9 @@ class Toolbox:
             inv, vendor = await self._vendor_and_data(conn, invoice_id)
             po = await repo.get_po(conn, inv.po_number)
             policy = await repo.get_policy(conn)
-        r = match_check(inv, po, policy.variance_pct)
+        r = match_check(
+            inv, po, policy.variance_pct, policy.po_required, policy.grn_required
+        )
         if po is not None and vendor is not None and po.vendor_id != vendor.id:
             r.add(
                 Flag.PO_VENDOR_MISMATCH,

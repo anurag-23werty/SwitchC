@@ -56,7 +56,9 @@ async def price_variance_pct(conn: AsyncConnection, invoice_id: int) -> Decimal 
     if po is None:
         return None
     policy = await repo.get_policy(conn)
-    report = three_way_match(inv, po, policy.variance_pct)
+    report = three_way_match(
+        inv, po, policy.variance_pct, policy.po_required, policy.grn_required
+    )
     for f in report.findings:
         if f.flag == Flag.PRICE_VARIANCE:
             return Decimal(f.details["variance_pct"])

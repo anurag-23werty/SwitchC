@@ -57,6 +57,8 @@ async def get_policy(conn: AsyncConnection) -> Policy:
         approvers=p["approvers"],
         min_extraction_confidence=Decimal(p.get("min_extraction_confidence", "0.70")),
         injection_score_threshold=Decimal(p.get("injection_score_threshold", "0.90")),
+        po_required=bool(p.get("po_required", True)),
+        grn_required=bool(p.get("grn_required", True)),
         vendor_exceptions=p.get("vendor_exceptions", []),
         steward_min_overrides=int(p.get("steward", {}).get("min_overrides", 2)),
         steward_eligible_flags=p.get("steward", {}).get(

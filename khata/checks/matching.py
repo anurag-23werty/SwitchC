@@ -53,9 +53,17 @@ def _pct(over: Decimal, base: Decimal) -> Decimal:
 
 
 def three_way_match(
-    inv: InvoiceData, po: PurchaseOrder | None, variance_pct: Decimal
+    inv: InvoiceData,
+    po: PurchaseOrder | None,
+    variance_pct: Decimal,
+    po_required: bool = True,
+    grn_required: bool = True,
 ) -> CheckReport:
     """Flag price variance and quantity variance above `variance_pct` percent.
+
+    `po_required` / `grn_required` come from the policy: a business that doesn't
+    raise POs isn't flagged for an invoice without one, and one that doesn't record
+    goods receipts has billed quantities checked against the PO's ordered quantities.
 
     Price: what was billed vs what the PO price would give for the billed
     quantities, with any charge not on the PO counted as variance.
@@ -63,11 +71,20 @@ def three_way_match(
     """
     r = CheckReport(check="three_way_match")
     if po is None:
-        r.add(
-            Flag.PO_NOT_FOUND,
-            f"PO {inv.po_number or '(none quoted)'} is not in our books",
-            po_number=inv.po_number,
-        )
+        if po_required:
+            r.add(
+                Flag.PO_NOT_FOUND,
+                f"PO {inv.po_number or '(none quoted)'} is not in our books",
+                po_number=inv.po_number,
+            )
+        elif inv.po_number:
+            r.add(
+                None,
+                f"Quotes PO {inv.po_number}, which isn't in Khata; POs aren't required here",
+                po_number=inv.po_number,
+            )
+        else:
+            r.add(None, "No PO quoted; POs aren't required here")
         return r
 
     agreed = Decimal("0")  # billed quantities at PO prices
@@ -87,7 +104,22 @@ def three_way_match(
                 f"(+{rate_over}%)",
                 po_line=po_line.line_no,
             )
-        if po_line.qty_received <= 0 or line.qty > po_line.qty_received:
+        if not grn_required and po_line.qty_received <= 0:
+            # Nothing received on record and GRNs aren't required: hold the bill
+            # against what was ordered instead.
+            if line.qty > po_line.qty:
+                qty_over = _pct(line.qty - po_line.qty, po_line.qty)
+                if qty_over > variance_pct:
+                    r.add(
+                        Flag.QTY_VARIANCE,
+                        f"'{po_line.description}': billed {line.qty}, ordered {po_line.qty} "
+                        f"(+{qty_over}%)",
+                        po_line=po_line.line_no,
+                        billed=str(line.qty),
+                        ordered=str(po_line.qty),
+                        variance_pct=str(qty_over),
+                    )
+        elif po_line.qty_received <= 0 or line.qty > po_line.qty_received:
             qty_over = (
                 _pct(line.qty - po_line.qty_received, po_line.qty_received)
                 if po_line.qty_received

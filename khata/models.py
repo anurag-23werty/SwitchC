@@ -179,6 +179,8 @@ class Policy(BaseModel):
     approvers: dict[str, str]  # role -> username
     min_extraction_confidence: Decimal = Decimal("0.70")
     injection_score_threshold: Decimal = Decimal("0.90")
+    po_required: bool = True
+    grn_required: bool = True
     vendor_exceptions: list[VendorException] = Field(default_factory=list)
     # Policy Steward: how many matching human approvals make a pattern, the
     # flags it may ever propose relaxing, and the largest variance it may propose.

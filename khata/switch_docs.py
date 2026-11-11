@@ -40,6 +40,18 @@ def policy_text(p: Policy) -> str:
             "unconfirmed readings: on hold for the finance manager.",
             "- Invalid GSTIN, wrong GST type, bad arithmetic or a duplicate number: "
             "rejected; the vendor must reissue.",
+            "- Purchase orders: "
+            + (
+                "every invoice must quote one that's in Khata."
+                if p.po_required
+                else "optional."
+            )
+            + " Goods receipts: "
+            + (
+                "required before a billed quantity is accepted."
+                if p.grn_required
+                else "optional (without one, billed quantities are checked against the PO)."
+            ),
             f"- Arithmetic tolerance {_rs(p.arithmetic_tolerance)}; duplicate window "
             f"{p.duplicate_window_days} days.",
             "- No agent ever pays. Payer drafts a NEFT file for a person to upload.",

@@ -356,3 +356,30 @@ def test_every_flag_has_an_outcome():
         set(REJECT) | set(HOLD_FOR_MANAGER) | set(NEEDS_MANAGER) | {Flag.BANK_CHANGE}
     )
     assert handled == set(Flag)
+
+
+# --- businesses that don't use POs or GRNs (policy po_required / grn_required) ---
+
+
+def test_no_po_is_fine_when_pos_are_not_required():
+    r = three_way_match(inv(), None, D("2.0"), po_required=False)
+    assert r.flags == [] and "aren't required" in r.findings[0].message
+    strict = three_way_match(inv(), None, D("2.0"))
+    assert strict.flags == [Flag.PO_NOT_FOUND]
+
+
+def test_without_grns_billing_is_held_to_the_ordered_quantity():
+    nothing_received = po(qty="10", received="0")
+    ok = three_way_match(inv(qty="10"), nothing_received, D("2.0"), grn_required=False)
+    assert Flag.QTY_VARIANCE not in ok.flags
+    over = three_way_match(
+        inv(qty="12"), nothing_received, D("2.0"), grn_required=False
+    )
+    assert Flag.QTY_VARIANCE in over.flags and "ordered" in over.findings[0].message
+    strict = three_way_match(inv(qty="10"), nothing_received, D("2.0"))
+    assert Flag.QTY_VARIANCE in strict.flags
+    # a GRN on record is still checked even when GRNs are optional
+    short = three_way_match(
+        inv(qty="10"), po(received="8"), D("2.0"), grn_required=False
+    )
+    assert Flag.QTY_VARIANCE in short.flags
