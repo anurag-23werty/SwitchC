@@ -30,3 +30,6 @@ evals/runs/
 .DS_Store
 .idea/
 .vscode/
+
+# Database backups (deploy/backup.sh)
+backups/

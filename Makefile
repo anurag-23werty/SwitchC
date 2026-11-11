@@ -1,6 +1,6 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: setup-demo migrate help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
+.PHONY: backup setup-demo migrate help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
@@ -20,6 +20,7 @@ help:
 	@echo "make eval        all 31 labelled invoices through the workflow -> evals/report.md"
 	@echo "make dashboard   read-only ledger at http://127.0.0.1:8088"
 	@echo "make steward-demo  D03, D04 -> rule proposal -> owner approves -> S01 auto-approved"
+	@echo "make backup      dump Khata's and Switch's databases + payment files to backups/"
 	@echo "make image       build the Khata container image (deploy/ for the VM setup)"
 	@echo "make test        run the test suite"
 
@@ -92,6 +93,9 @@ steward-demo:
 
 image:
 	docker build -t khata:local .
+
+backup:
+	./deploy/backup.sh
 
 test:
 	uv run pytest -q
