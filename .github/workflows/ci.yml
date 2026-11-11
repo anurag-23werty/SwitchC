@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: khata
+          POSTGRES_PASSWORD: khata
+          POSTGRES_DB: khata
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U khata -d khata"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      KHATA_DATABASE_URL: postgresql://khata:khata@localhost:5433/khata
+      SWITCH_REGISTRATION_TOKEN: ci-not-a-secret
+      KHATA_EMBEDDER: hash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.26"
+      - name: Install Tesseract (OCR tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr
+      - run: uv python install 3.13
+      - run: uv sync --frozen
+      - name: Lint
+        run: |
+          uv run ruff check . --exclude vendor
+          uv run ruff format --check . --exclude vendor
+      - name: Demo invoice PDFs (test inputs)
+        run: uv run python -m data.generate_invoices
+      - name: Tests
+        run: uv run pytest -q
