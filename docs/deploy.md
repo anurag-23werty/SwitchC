@@ -27,11 +27,24 @@ make env            # creates .env and switch/stack/.env with fresh secrets
 #   KHATA_DASHBOARD_TOKEN=<long random string>
 docker compose -f docker-compose.yml -f deploy/docker-compose.deploy.yml \
   --profile collab --profile gateway --profile deploy up -d --build
-docker compose -f docker-compose.yml -f deploy/docker-compose.deploy.yml \
-  --profile deploy run --rm khata-serve sh -c "python -m db.seed && khata setup-switch"
-docker compose -f docker-compose.yml -f deploy/docker-compose.deploy.yml \
-  --profile deploy restart khata-serve
 ```
+
+Then onboard your business inside the container (the schema is migrated automatically
+when `khata-serve` starts). Put your `khata.yaml` and CSVs in `./config/` (gitignored;
+see [self-hosting.md](self-hosting.md)), then:
+
+```sh
+K="docker compose -f docker-compose.yml -f deploy/docker-compose.deploy.yml --profile deploy"
+$K run --rm khata-serve khata init /app/config/khata.yaml --as <owner>
+$K run --rm khata-serve khata import vendors /app/config/vendors.csv --as <finance manager>
+$K run --rm khata-serve khata setup-switch      # prints one-time passwords for new accounts
+$K restart khata-serve
+```
+
+To try the demo business instead, use `khata-serve sh -c "python -m db.seed && khata
+setup-switch --demo"` (this wipes Khata's database).
+
+Daily backups: `COMPOSE="$K" ./deploy/backup.sh` from cron (see self-hosting.md).
 
 `<ip>.sslip.io` names resolve to the IP inside them, so Let's Encrypt works without
 buying a domain. Open ports 80 and 443 in the VM's firewall.
@@ -61,6 +74,10 @@ Verified on the local stack:
 - tracing: `tests/test_tracing.py` runs real invoices through the graph with the
   Langfuse SDK and an in-memory OpenTelemetry exporter (one trace per run, nodes and
   generations inside it, no document text unless capture is on).
+
+Also verified (later): the image's `khata db migrate`, `khata init` and `khata import`
+against a fresh database with the config mounted at `/app/config`, and Tesseract OCR
+inside the image reading a scanned invoice.
 
 Not done: an actual VM. Free VM tiers (Oracle, GCP, AWS) all ask for a card, so this
 was left for you to decide. Sending traces to a real Langfuse server was not tested

@@ -15,6 +15,8 @@ services:
     build: .
     image: khata:local
     profiles: [deploy]
+    # Upgrades are safe: pending migrations are applied before the agents start.
+    command: ["sh", "-c", "khata db migrate && khata -v serve"]
     env_file: .env
     environment: &khata-env
       SWITCH_API_URL: http://switch:8000
@@ -29,6 +31,7 @@ services:
       - khatastate:/app/state
       - khatapayments:/app/data/out
       - ./switch/stack/.env:/app/switch-stack.env:ro
+      - ./config:/app/config:ro   # your khata.yaml and CSVs (see docs/self-hosting.md)
     depends_on:
       switch:
         condition: service_started

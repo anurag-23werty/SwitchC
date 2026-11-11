@@ -33,3 +33,6 @@ evals/runs/
 
 # Database backups (deploy/backup.sh)
 backups/
+
+# Your business config and CSVs for a deployment (docs/self-hosting.md)
+config/

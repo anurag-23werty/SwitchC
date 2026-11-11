@@ -1,79 +1,126 @@
-# Khata — an agentic accounts-payable room on Switch
+# Khata: an AI accounts-payable desk for small businesses
 
-> Status: Phase 6 (stretch: Policy Steward, pgvector vendor knowledge, ledger dashboard, vendor inbox + Liaison, single-VM deploy) done. The full README lands in Phase 7.
+Khata turns your finance team's chat into an accounts-payable desk. Post a vendor
+invoice (a PDF, a scan or a phone photo) in the chat room, and Khata's agents read it,
+check it, explain anything unusual, and route it to the right person. That person
+replies `approve <reason>` or `reject <reason>`, and approved invoices become a NEFT
+bulk-upload file and journal entries for you to upload to your bank.
 
-Khata turns a finance team's chat channel into a [Switch](https://github.com/sandbox-quantum/switch)
-room where AI agents receive, read, verify and match vendor invoices, explain exceptions,
-route approvals to the right person, and draft payment batches — while people make every
-money decision.
+It is built for Indian small businesses: GST-aware (GSTIN check digits, IGST vs
+CGST + SGST, the split, the arithmetic), works with or without purchase orders, and runs
+on your own machine on free AI tiers. It runs on [Switch](https://github.com/sandbox-quantum/switch),
+which connects the agents to your team's chat (Mattermost out of the box; Slack, Teams,
+Discord or Telegram through Switch's bridges).
 
-Built for the WeMakeDevs **Flip the Switch** hackathon (Track 1: Best Business Workflow).
+## Why you can trust it with money
 
-## Run it (so far)
+- **No agent pays.** Khata drafts a bank-upload file; a person uploads it.
+- **No AI makes a money decision.** Every check (GST, arithmetic, duplicates, PO/GRN
+  match, bank details) and every routing decision is plain code against your policy.
+  The models only read the document and write explanations.
+- **Two different models read every invoice**, and the amount, GSTIN, invoice number and
+  bank account must match exactly and appear in the document, or a person looks.
+- **Bank details are a hard stop.** An invoice naming a different account than your
+  vendor master is held for the owner, who is told to call the vendor on the number you
+  have on file. Bank details can't be changed from an invoice or a chat message.
+- **Invoice text is untrusted.** Text aimed at AI agents is detected and the invoice is
+  held.
+- **Only the right person can approve**, a reason is required, and everything (every
+  check, model call, tool call and decision) is in an append-only audit log.
 
-Requires Docker, [uv](https://docs.astral.sh/uv/) and `make`.
+## Try it in five commands (demo business)
 
-```sh
-make env      # generates Switch's server secrets and Khata's .env
-make up       # Switch core + Mattermost + Gateway, and Khata's Postgres
-uv sync
-make seed     # Khata's database + 31 invoice PDFs + evals/golden.yaml
-make hello    # a custom agent joins Mattermost through the Switch Agent Protocol
-make test
-```
-
-The demo business, vendors, approval policy and all 31 labelled invoices are described
-in [docs/demo-data.md](docs/demo-data.md). The checks, approval policy, permissions and MCP
-tools are in [docs/tools-and-policy.md](docs/tools-and-policy.md).
-
-```sh
-make mcp AGENT=analyst   # Khata's tools over MCP, only the ones that agent may call
-make demo                # D01-D09 through the agent workflow with live LLMs (no Switch yet)
-uv run khata pending     # approvals waiting for a person
-uv run khata decide 10 --as priya approve Matches PO and goods received
-```
-
-How the agents run (two-model extraction, Analyst and Auditor on different
-providers, the approval gate, retries, Prompt Guard) is in
-[docs/agent-runtime.md](docs/agent-runtime.md). LLM keys go in `.env`
-(`GROQ_API_KEY`, `OPENROUTER_API_KEY`; both free, no card).
-
-## Khata in the room
+Needs Docker, [uv](https://docs.astral.sh/uv/), `make`, and free
+[Groq](https://console.groq.com/keys) and [OpenRouter](https://openrouter.ai/keys) keys in `.env`.
 
 ```sh
-make setup-switch   # 9 agents, the team's and vendor contacts' accounts, #ap-desk, #ap-audit, #ap-inbox
-make serve          # the agents go to work
+make env && make up       # Switch + Mattermost + Khata's database (add LLM keys to .env)
+uv sync && make seed      # DEMO: a sample business, vendors, POs and 31 invoice PDFs
+make setup-demo           # agents, demo team accounts, #ap-desk / #ap-audit / #ap-inbox
+make serve                # the agents go to work
 ```
 
-Open http://localhost:8065, sign in as `ravi` (password: `KHATA_DEMO_PASSWORD` in
-`.env`) and drop an invoice PDF from `data/invoices/` into **#ap-desk**. The agents
-work it in its thread and tag the approver; sign in as `priya` or `owner` and reply
-`approve <reason>` or `reject <reason>`. Decisions also appear in **#ap-audit**.
-`uv run python scripts/room_demo.py` runs D01–D09 that way without clicking.
+Open http://localhost:8065, sign in as `ravi` (password: `KHATA_DEMO_PASSWORD` in `.env`)
+and drop `data/invoices/D01_…pdf` into **#ap-desk**. Sign in as `priya` or `owner` to
+approve. Or without the chat: `make demo` runs the nine demo invoices in the terminal.
 
-## Evals
+## Run it for your business
 
-`make eval` runs all 31 labelled invoices through the workflow and writes the scorecard,
-[evals/report.md](evals/report.md): fraud recall, duplicate recall and injection resistance
-100%, and decision, routing and flag accuracy 100%. Money decisions are graded by exact
-match, never by an LLM. What the eval found and fixed: [docs/evals.md](docs/evals.md).
+[docs/self-hosting.md](docs/self-hosting.md) is the full guide. In short:
 
-How Khata uses Switch: [docs/switch-room.md](docs/switch-room.md) and
+```sh
+make env && make up && uv sync && make migrate
+mkdir config && cp examples/khata.yaml examples/vendors.csv config/   # fill them in
+uv run khata init config/khata.yaml --as <owner>
+uv run khata import vendors config/vendors.csv --as <finance manager>
+uv run khata setup-switch && make serve
+```
+
+For a server your team reaches over HTTPS (Caddy, automatic certificates), see
+[docs/deploy.md](docs/deploy.md). Back up with `make backup`.
+
+## What it does
+
+| | |
+|---|---|
+| **Reads** | PDFs; scans and photos through local OCR (always sent to a person) |
+| **Checks** | GSTIN and GST type and split, arithmetic, duplicates and near-duplicates, vendor master, bank details, PO prices and GRN quantities (each optional) |
+| **Routes** | By your policy: auto-approve small clean invoices, finance manager, then owner above a limit; holds for anything suspicious |
+| **Explains** | An Analyst note for the approver citing past decisions for that vendor (pgvector search over your history), checked by an Auditor on a different model |
+| **Learns** | The Policy Steward proposes a rule when people keep approving the same exception; only the owner can accept it, as a new policy version |
+| **Talks to vendors** | `#ap-inbox` (Telegram-ready): vendors ask for status and send invoices; bank-change requests are refused and the owner alerted |
+| **Pays (almost)** | NEFT bulk-upload CSV and journal entries, idempotent per invoice |
+| **Shows** | A read-only ledger dashboard: queue, invoice history, audit trail, policy versions, metrics |
+
+## How it works
+
+```
+ your team in #ap-desk ── Switch (Agent Protocol) ── Khata's agents ── Postgres (system of record)
+                                                       │
+  Dispatcher → Intake (2 models + OCR) → Verifier (checks) → Router (policy) → Analyst → Auditor
+       → a person decides in the thread → Payer (NEFT draft) → Policy Steward
+  Vendor Liaison in #ap-inbox · every step logged · LangGraph checkpoints survive restarts
+```
+
+Nine agents, each a Switch participant with its own name and only the tools it's
+allowed: [docs/switch-room.md](docs/switch-room.md). The workflow and models:
+[docs/agent-runtime.md](docs/agent-runtime.md). Checks, policy and permissions:
+[docs/tools-and-policy.md](docs/tools-and-policy.md).
+
+## How well it works
+
+`make eval` runs 31 hand-labelled invoices through the real workflow and grades every
+money decision by exact match ([evals/report.md](evals/report.md),
+[docs/evals.md](docs/evals.md)):
+
+| Fraud caught | Duplicates stopped | Injection resisted | Decisions as labelled | Critical fields read right |
+|---|---|---|---|---|
+| 100% (3/3) | 100% (3/3) | 100% (2/2) | 100% | 100% |
+
+The set is small and its PDFs are clean and digital; treat it as a regression suite, not
+a promise about every invoice you'll receive.
+
+## Development
+
+```sh
+make up && uv sync && make seed
+make test          # 340 tests: checks, policy, workflow, Switch service, onboarding, OCR
+uv run ruff check . --exclude vendor
+```
+
+CI runs lint and the full suite against pgvector Postgres on every push
+(`.github/workflows/ci.yml`). Schema changes go in a new numbered file in
+`db/migrations/`.
+
+## Roadmap
+
+- Invoices by email (an inbox that posts into #ap-desk)
+- Export to Tally / Zoho Books; bank-specific NEFT layouts
+- Several businesses per installation
+- Vendor onboarding with bank-account verification (penny drop)
+
+## Background
+
+Khata was started for the WeMakeDevs *Flip the Switch* hackathon and then turned into a
+tool meant for real use. The Switch findings from building it are in
 [docs/switch-notes.md](docs/switch-notes.md).
-
-## Phase 6
-
-- **Policy Steward** (`khata-steward`): after people approve the same exception for a
-  vendor twice, it proposes a rule in `#ap-desk`; only the owner can accept it, which
-  writes a new policy version. `make steward-demo`. [docs/policy-steward.md](docs/policy-steward.md)
-- **Vendor knowledge in pgvector**: notes, agreed rules and every human decision are
-  embedded locally (fastembed `bge-small-en-v1.5`, no API) and the Analyst gets the
-  nearest first, so "transport costs" finds a freight approval.
-- **Ledger** (`make dashboard`, http://127.0.0.1:8088): invoice queue, each invoice's
-  full history, the audit trail, policy versions and proposals, metrics. Read-only:
-  decisions stay in the room.
-- **Vendor inbox** (`#ap-inbox`, Telegram-ready) with **`khata-liaison`**: vendors ask
-  for status and send PDFs; bank-change requests are refused and the owner alerted.
-  [docs/vendor-inbox.md](docs/vendor-inbox.md)
-- **Deploy**: Dockerfile, `deploy/docker-compose.deploy.yml` with Caddy (HTTPS), and
-  optional Langfuse traces. [docs/deploy.md](docs/deploy.md)
