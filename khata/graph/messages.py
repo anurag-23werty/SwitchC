@@ -20,16 +20,14 @@ def _amount(v: Any) -> str:
 
 
 def extraction_line(inv: dict[str, Any], rec: dict[str, Any]) -> str:
-    who = ", ".join(
-        f"{r['endpoint']} ({r['model']})"
-        for r in (rec["a"], rec["b"])
-        if r.get("model")
-    )
-    agree = (
-        "Readers disagree: " + "; ".join(rec["notes"])
-        if rec["disagreements"]
-        else f"Both readers agree ({who})."
-    )
+    usable = [r for r in (rec["a"], rec["b"]) if r.get("fields") and not r.get("error")]
+    who = ", ".join(f"{r['endpoint']} ({r['model']})" for r in usable)
+    if rec["disagreements"]:
+        agree = "Readers disagree: " + "; ".join(rec["notes"])
+    elif len(usable) == 2:
+        agree = f"Both readers agree ({who})."
+    else:
+        agree = f"Read by {who or 'no reader'} only."
     extra = (
         " " + " ".join(n for n in rec["notes"] if not rec["disagreements"])
         if rec["notes"]

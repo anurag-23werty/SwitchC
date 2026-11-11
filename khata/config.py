@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
+    # Strip whitespace: `docker run --env-file` keeps trailing spaces python-dotenv drops,
+    # and "openai/gpt-oss-120b " is a model that does not exist.
+    model_config = SettingsConfigDict(
+        env_file=ROOT / ".env", extra="ignore", str_strip_whitespace=True
+    )
 
     switch_api_url: str = "http://localhost:8000"
     switch_registration_token: str

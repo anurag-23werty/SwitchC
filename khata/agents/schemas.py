@@ -34,6 +34,21 @@ def parse_amount(text: str | None) -> Decimal:
         raise ValueError(f"not an amount: {text!r}") from e
 
 
+QTY_WITH_UNIT = re.compile(
+    r"^\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([A-Za-z][A-Za-z.]{0,11})?\s*$"
+)
+
+
+def parse_qty(text: str, unit: str | None) -> tuple[Decimal, str | None]:
+    """'300' or '5 nos' -> (qty, unit). A reader sometimes writes the unit into the
+    quantity; anything other than a number and an optional short word is refused."""
+    m = QTY_WITH_UNIT.match(str(text))
+    if m is None:
+        raise ValueError(f"not a quantity: {text!r}")
+    qty = Decimal(m.group(1).replace(",", ""))
+    return qty, unit or (m.group(2).rstrip(".") if m.group(2) else None)
+
+
 def parse_date(text: str) -> date:
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%d %b %Y"):
         try:
@@ -108,8 +123,8 @@ class Extraction(BaseModel):
                 InvoiceLine(
                     description=ln.description.strip(),
                     hsn=opt(ln.hsn),
-                    qty=Decimal(re.sub(r"[,\s]", "", ln.qty)),
-                    unit=opt(ln.unit),
+                    qty=(q := parse_qty(ln.qty, opt(ln.unit)))[0],
+                    unit=q[1],
                     rate=parse_amount(ln.rate),
                     gst_rate=(
                         Decimal(re.sub(r"[%\s]", "", g))
