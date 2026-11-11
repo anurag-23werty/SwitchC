@@ -176,6 +176,17 @@ POLICY_V1 = {
     "min_extraction_confidence": "0.70",
     # Prompt Guard score at or above this is treated as an injection attempt.
     "injection_score_threshold": "0.90",
+    # Policy Steward: after this many human approvals of the same exception for
+    # the same vendor, propose a rule. Only these flags may ever be relaxed, and
+    # never beyond max_variance_pct. Bank changes, injections, duplicates and
+    # unknown vendors are not in the list and can't be added by the Steward.
+    "steward": {
+        "min_overrides": 2,
+        "eligible_flags": ["PRICE_VARIANCE"],
+        "max_variance_pct": "10.0",
+    },
+    # Vendor-specific allowances, added only by an approved Steward proposal.
+    "vendor_exceptions": [],
 }
 
 
@@ -439,6 +450,15 @@ PO_G31 = _po(
     Line("MS angle 50x50x6 mm, 6 m length", "7216", 100, "nos", 1200),
     received=(60,),
 )
+# Policy Steward demo (not in the golden set): after D03 and D04, the owner
+# approves accepting up to 4% from Mumbai Steel; this small order with the same
+# freight pattern is then auto-approved under the new policy version.
+PO_S01 = _po(
+    "PO-2026-1140",
+    MST,
+    "2026-10-30",
+    Line("MS angle 40x40x5 mm, 6 m length", "7216", 5, "nos", 1200),
+)
 
 POS = [
     PO_D01,
@@ -468,6 +488,7 @@ POS = [
     PO_G29,
     PO_G30,
     PO_G31,
+    PO_S01,
 ]
 
 PRIYA_OK = Human("priya", "approve", "Matches PO and goods received.")
@@ -952,6 +973,23 @@ class PastInvoice:
     approved_by: str = "priya"
 
 
+# Invoices for the Policy Steward demo (`khata steward-demo`). Labelled for the
+# policy they're meant to meet: S01 assumes the owner approved the D03/D04 rule.
+STEWARD_INVOICES: list[InvoiceSpec] = [
+    InvoiceSpec(
+        "S01",
+        "Same 4% freight pattern, small order: auto-approved once the owner accepts the rule",
+        MST,
+        "MST/INV/7840",
+        date(2026, 11, 5),
+        PO_S01,
+        lines=PO_S01.lines + (Line(FREIGHT, "9965", 1, "lot", 240),),
+        expected=Expected(
+            ("PRICE_VARIANCE",), "auto", "PAYMENT_DRAFTED", "PAYMENT_DRAFTED"
+        ),
+    ),
+]
+
 HISTORY = [
     PastInvoice(
         SOS, "SOS/26-27/0288", date(2026, 8, 14), Decimal("4000.00"), approved_by="auto"
@@ -965,6 +1003,13 @@ HISTORY = [
     PastInvoice(MST, "MST/INV/7588", date(2026, 9, 29), Decimal("50000.00")),
     PastInvoice(CEL, "CEL/1310", date(2026, 9, 5), Decimal("10000.00")),
     PastInvoice(BLC, "BLC/2026/251", date(2026, 9, 10), Decimal("20000.00"), 12),
+]
+
+# Vendor-side contacts allowed in the vendor inbox (#ap-inbox). Each one may ask
+# about, and send invoices for, their own company only.
+VENDOR_CONTACTS = [
+    {"username": "ramesh-dpk", "display_name": "Ramesh Rao", "vendor": "DPK"},
+    {"username": "sunita-mst", "display_name": "Sunita Shah", "vendor": "MST"},
 ]
 
 # Things the team already knows about vendors (vendor_knowledge seed rows).

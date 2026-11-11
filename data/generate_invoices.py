@@ -344,6 +344,8 @@ def main() -> None:
             allow_unicode=True,
         )
     )
+    for spec in fx.STEWARD_INVOICES:  # PDFs only: not part of the golden set
+        build_pdf(spec, OUT_DIR / file_name(spec))
     demo = sum(1 for s in fx.INVOICES if s.demo)
     print(
         f"wrote {len(entries)} invoices ({demo} demo, {len(entries) - demo} eval-only) to "

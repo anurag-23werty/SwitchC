@@ -43,6 +43,17 @@ CREATE TABLE vendors (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
+-- People at a vendor who may talk to Khata in the vendor inbox (#ap-inbox,
+-- bridged to Telegram). `username` is what Switch reports as the sender. Only
+-- these contacts get status answers, and only about their own vendor.
+CREATE TABLE vendor_contacts (
+    username      text PRIMARY KEY,
+    vendor_id     int NOT NULL REFERENCES vendors(id),
+    display_name  text NOT NULL,
+    registered_by text NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE purchase_orders (
     id         serial PRIMARY KEY,
     po_number  text NOT NULL UNIQUE,
@@ -163,6 +174,33 @@ CREATE TABLE decisions (
 );
 CREATE INDEX decisions_invoice ON decisions (invoice_id);
 
+-- Rule changes the Policy Steward proposes after people keep approving the same
+-- exception. Nothing changes until the owner approves; approval writes a new
+-- `rules` version (the old one stays, so every past decision keeps its version).
+CREATE TABLE rule_proposals (
+    id                 serial PRIMARY KEY,
+    vendor_id          int NOT NULL REFERENCES vendors(id),
+    flag               text NOT NULL,
+    max_variance_pct   numeric(6, 2) NOT NULL,
+    evidence           int[] NOT NULL,          -- invoice ids whose approvals form the pattern
+    base_version       int NOT NULL REFERENCES rules(version),
+    summary            text NOT NULL,
+    status             text NOT NULL DEFAULT 'proposed'
+                           CHECK (status IN ('proposed', 'approved', 'rejected', 'superseded')),
+    proposed_by        text NOT NULL,
+    decided_by         text,
+    decision_reason    text,
+    new_version        int REFERENCES rules(version),
+    switch_room_id     text,
+    switch_thread_id   text,                    -- the proposal's thread in #ap-desk
+    switch_message_id  text,                    -- the reply that decided it
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    decided_at         timestamptz
+);
+-- One open proposal per vendor and flag at a time.
+CREATE UNIQUE INDEX rule_proposals_open ON rule_proposals (vendor_id, flag)
+    WHERE status = 'proposed';
+
 -- Append-only trail: every state change and every notable agent action.
 CREATE TABLE audit_log (
     id          bigserial PRIMARY KEY,
@@ -192,17 +230,23 @@ CREATE TABLE tool_calls (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 
--- What the team knows about each vendor. Embeddings are 384-d (bge-small /
--- all-MiniLM class, run locally), filled in when the Analyst needs retrieval.
+-- What the team knows about each vendor: notes, approved rule patterns, and every
+-- human decision (mirrored here with its reason). Embeddings are 384-d
+-- (bge-small, run locally by fastembed), filled in when the Analyst searches;
+-- `embedding_model` says which model made each one, so a model change re-embeds.
 CREATE TABLE vendor_knowledge (
     id                  serial PRIMARY KEY,
     vendor_id           int NOT NULL REFERENCES vendors(id),
     kind                text NOT NULL CHECK (kind IN ('note', 'decision', 'pattern')),
     content             text NOT NULL,
-    source_decision_id  int REFERENCES decisions(id),
+    source_decision_id  int UNIQUE REFERENCES decisions(id),
     embedding           vector(384),
+    embedding_model     text,
     created_at          timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX vendor_knowledge_vendor ON vendor_knowledge (vendor_id);
+CREATE INDEX vendor_knowledge_embedding ON vendor_knowledge
+    USING hnsw (embedding vector_cosine_ops);
 
 -- Draft payment batches. Khata never pays: a batch is a NEFT bulk-upload CSV
 -- and a journal entry for a person to upload to the bank.

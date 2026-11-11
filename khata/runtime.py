@@ -25,6 +25,7 @@ from langgraph.types import Command
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from khata import steward, tracing
 from khata.config import ROOT, Settings, get_settings
 from khata.db import make_pool
 from khata.graph.workflow import Deps, build_graph
@@ -118,24 +119,28 @@ class Khata:
                 await guard.aclose()
             await cp_pool.close()
             await pool.close()
+            tracing.flush()
 
     # -- running ------------------------------------------------------------------
 
     async def _run(self, thread: str, payload: Any, on_log: OnLog | None) -> Outcome:
         """Run until the gate or the end. `on_log(invoice_id, line)` hears each agent
         message as its node finishes, so a room can show the work as it happens."""
-        config = {"configurable": {"thread_id": thread}}
+        config = {"configurable": {"thread_id": thread}, **tracing.run_config()}
         before = await self.graph.aget_state(config)
         seen = len(before.values.get("log", [])) if before.values else 0
         invoice_id = before.values.get("invoice_id") if before.values else None
-        async for chunk in self.graph.astream(payload, config, stream_mode="updates"):
-            for node, update in chunk.items():
-                if node.startswith("__") or not isinstance(update, dict):
-                    continue
-                invoice_id = update.get("invoice_id", invoice_id)
-                if on_log is not None:
-                    for line in update.get("log") or []:
-                        await on_log(invoice_id, line)
+        with tracing.invoice_run(thread):
+            async for chunk in self.graph.astream(
+                payload, config, stream_mode="updates"
+            ):
+                for node, update in chunk.items():
+                    if node.startswith("__") or not isinstance(update, dict):
+                        continue
+                    invoice_id = update.get("invoice_id", invoice_id)
+                    if on_log is not None:
+                        for line in update.get("log") or []:
+                            await on_log(invoice_id, line)
         return await self.outcome(thread, since=seen)
 
     async def outcome(self, thread: str, since: int = 0) -> Outcome:
@@ -225,7 +230,7 @@ class Khata:
             rows = await (
                 await conn.execute(
                     "SELECT id, graph_thread_id FROM invoices WHERE graph_thread_id IS NOT NULL "
-                    "AND state NOT IN ('REJECTED', 'PAYMENT_DRAFTED') ORDER BY id"
+                    "AND state <> 'REJECTED' ORDER BY id"
                 )
             ).fetchall()
         out = []
@@ -236,6 +241,33 @@ class Khata:
             if snap.next and not any(t.interrupts for t in snap.tasks):
                 out.append(r["id"])
         return out
+
+    # -- rule proposals (Policy Steward) ------------------------------------------
+
+    async def proposals(self, status: str | None = None) -> list[dict[str, Any]]:
+        async with self.pool.connection() as conn:
+            rows = await (
+                await conn.execute(
+                    "SELECT id FROM rule_proposals WHERE %s::text IS NULL OR status = %s "
+                    "ORDER BY id",
+                    (status, status),
+                )
+            ).fetchall()
+            return [await steward.describe(conn, r["id"]) for r in rows]
+
+    async def decide_rule(
+        self,
+        proposal_id: int,
+        username: str,
+        decision: str,
+        reason: str,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """The owner's answer to a rule proposal. Approval activates a new policy version."""
+        async with self.pool.connection() as conn, conn.transaction():
+            return await steward.decide(
+                conn, proposal_id, username, decision, reason, message_id
+            )
 
     async def pending(self) -> list[Outcome]:
         """Every run paused at the approval gate."""

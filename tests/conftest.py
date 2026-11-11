@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
+# Deterministic embeddings in tests: no model download, same vectors every run.
+os.environ.setdefault("KHATA_EMBEDDER", "hash")
+
 from datetime import date
 from decimal import Decimal
 from pathlib import Path

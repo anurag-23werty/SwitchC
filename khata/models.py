@@ -155,6 +155,18 @@ class PriorInvoice(BaseModel):
     state: State
 
 
+class VendorException(BaseModel):
+    """A variance one vendor is allowed, written into the policy by an approved
+    Policy Steward proposal. Only PRICE_VARIANCE is ever eligible."""
+
+    vendor_code: str
+    flag: str
+    max_variance_pct: Decimal
+    proposal_id: int | None = None
+    evidence: list[str] = Field(default_factory=list)  # invoice numbers it came from
+    approved_by: str | None = None
+
+
 class Policy(BaseModel):
     """The approval policy. Loaded from the active row of the `rules` table."""
 
@@ -167,6 +179,26 @@ class Policy(BaseModel):
     approvers: dict[str, str]  # role -> username
     min_extraction_confidence: Decimal = Decimal("0.70")
     injection_score_threshold: Decimal = Decimal("0.90")
+    vendor_exceptions: list[VendorException] = Field(default_factory=list)
+    # Policy Steward: how many matching human approvals make a pattern, the
+    # flags it may ever propose relaxing, and the largest variance it may propose.
+    steward_min_overrides: int = 2
+    steward_eligible_flags: list[str] = Field(
+        default_factory=lambda: ["PRICE_VARIANCE"]
+    )
+    steward_max_variance_pct: Decimal = Decimal("10.0")
+
+    def exception_for(
+        self, vendor_code: str | None, flag: str
+    ) -> VendorException | None:
+        return next(
+            (
+                e
+                for e in self.vendor_exceptions
+                if vendor_code and e.vendor_code == vendor_code and e.flag == flag
+            ),
+            None,
+        )
 
 
 class RouteDecision(BaseModel):

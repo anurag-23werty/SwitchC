@@ -72,6 +72,12 @@ def load_masters(conn: psycopg.Connection) -> dict[str, int]:
                 v.first_seen,
             ),
         ).fetchone()
+    for c in fx.VENDOR_CONTACTS:
+        conn.execute(
+            """INSERT INTO vendor_contacts (username, vendor_id, display_name, registered_by)
+               VALUES (%s, %s, %s, 'seed')""",
+            (c["username"], vendor_ids[c["vendor"]], c["display_name"]),
+        )
     return vendor_ids
 
 

@@ -51,6 +51,7 @@ async def gather_facts(gw: ToolGateway, agent: str, invoice_id: int) -> dict[str
         None,
     )
     knowledge: list[dict[str, Any]] = []
+    retrieval = None
     if inv.get("vendor_code"):
         query = " ".join([*inv["flags"], *(ln["description"] for ln in inv["lines"])])
         kn = await gw.call(
@@ -59,8 +60,14 @@ async def gather_facts(gw: ToolGateway, agent: str, invoice_id: int) -> dict[str
             vendor_code=inv["vendor_code"],
             query=query,
         )
+        retrieval = kn.get("retrieval")
         knowledge = [
-            {"kind": k["kind"], "invoice_no": k["invoice_no"], "text": k["text"]}
+            {
+                "kind": k["kind"],
+                "invoice_no": k["invoice_no"],
+                "text": k["text"],
+                "relevance": k.get("score"),
+            }
             for k in kn["items"]
             if k.get("invoice_id") != invoice_id
         ]
@@ -88,7 +95,8 @@ async def gather_facts(gw: ToolGateway, agent: str, invoice_id: int) -> dict[str
         "flags": inv["flags"],
         "check_findings": findings,
         "policy_outcome": route,
-        "knowledge": knowledge,
+        "knowledge": knowledge,  # nearest the invoice's flags and lines first
+        "knowledge_retrieval": retrieval,
     }
 
 

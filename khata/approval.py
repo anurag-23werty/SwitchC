@@ -50,8 +50,37 @@ def _with_owner_above_limit(
     )
 
 
+def covered_by_exception(
+    flags: set[Flag],
+    policy: Policy,
+    vendor: Vendor | None,
+    price_variance_pct: Decimal | None,
+) -> str | None:
+    """Does an approved vendor exception cover this invoice's price variance?
+
+    Only the price variance is excused, only up to the percentage the owner
+    approved, and only for that vendor. Every other flag still routes as usual
+    (holds and rejections are decided before this is even looked at).
+    Returns the reason line, or None.
+    """
+    if Flag.PRICE_VARIANCE not in flags or vendor is None or price_variance_pct is None:
+        return None
+    exc = policy.exception_for(vendor.code, Flag.PRICE_VARIANCE.value)
+    if exc is None or price_variance_pct > exc.max_variance_pct:
+        return None
+    source = f" (from {', '.join(exc.evidence)})" if exc.evidence else ""
+    return (
+        f"Price +{price_variance_pct}% is within the {exc.max_variance_pct}% the owner "
+        f"agreed for {vendor.name} in policy v{policy.version}{source}"
+    )
+
+
 def route_approval(
-    flags: list[Flag], total: Decimal, policy: Policy, vendor: Vendor | None
+    flags: list[Flag],
+    total: Decimal,
+    policy: Policy,
+    vendor: Vendor | None,
+    price_variance_pct: Decimal | None = None,
 ) -> RouteDecision:
     flagset = set(flags)
 
@@ -94,22 +123,37 @@ def route_approval(
         route = "manager" if steps == ["manager"] else "manager_then_owner"
         return decide(State.ON_HOLD, route, steps, [f"On hold: {m}" for m in held])
 
-    needs = [msg for f, msg in NEEDS_MANAGER.items() if f in flagset]
+    accepted = covered_by_exception(flagset, policy, vendor, price_variance_pct)
+    needs = [
+        msg
+        for f, msg in NEEDS_MANAGER.items()
+        if f in flagset and not (accepted and f == Flag.PRICE_VARIANCE)
+    ]
+    noted = [accepted] if accepted else []
     if total > policy.manager_up_to:
         return decide(
             State.AWAITING_APPROVAL,
             "manager_then_owner",
             ["manager", "owner"],
-            [f"Above Rs {policy.manager_up_to}: finance manager, then owner", *needs],
+            [
+                f"Above Rs {policy.manager_up_to}: finance manager, then owner",
+                *needs,
+                *noted,
+            ],
         )
     if needs or total >= policy.auto_approve_below:
         reasons = needs or [
             f"Rs {policy.auto_approve_below} to Rs {policy.manager_up_to}: finance manager"
         ]
-        return decide(State.AWAITING_APPROVAL, "manager", ["manager"], reasons)
+        return decide(State.AWAITING_APPROVAL, "manager", ["manager"], reasons + noted)
     return decide(
         State.APPROVED,
         "auto",
         [],
-        [f"Clean match under Rs {policy.auto_approve_below}: auto-approved"],
+        [
+            f"Clean match under Rs {policy.auto_approve_below}: auto-approved"
+            if not accepted
+            else f"Under Rs {policy.auto_approve_below}: auto-approved",
+            *noted,
+        ],
     )

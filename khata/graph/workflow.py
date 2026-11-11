@@ -5,6 +5,7 @@
       -> route -> (auto) pay | (reject) END | (person) analyst -> auditor -> await_human
     await_human -> interrupt() ... a person replies ... -> record_decision
       -> await_human again (next step, or a refused reply) | pay | END
+    pay -> steward (a repeated, approved exception? propose a rule to the owner) -> END
 
 One graph run per invoice; its thread id is stored on the invoice row. The
 approval gate is LangGraph's `interrupt`: the run stops, its state is in
@@ -74,6 +75,7 @@ class InvoiceState(TypedDict, total=False):
     decision_error: str | None
     last_decision: dict[str, Any] | None
     payment: dict[str, Any]
+    proposal: dict[str, Any] | None
     state: str
     log: Annotated[list[dict[str, str]], operator.add]
 
@@ -495,6 +497,27 @@ def build_graph(deps: Deps) -> StateGraph:
             "log": say("khata-payer", text),
         }
 
+    # -- Policy Steward ----------------------------------------------------------------
+
+    async def steward_node(s: InvoiceState) -> dict:
+        res = await gw.call(
+            "policy_steward", "propose_rule_change", invoice_id=s["invoice_id"]
+        )
+        if not res["proposed"]:
+            return {}
+        p = res["proposal"]
+        names = ", ".join(e["invoice_no"] for e in p["evidence"])
+        return {
+            "proposal": _j(p),
+            "log": say(
+                "khata-steward",
+                f"People have now approved the same price variance from {p['vendor_name']} "
+                f"{len(p['evidence'])} times ({names}). I've proposed rule change "
+                f"#{p['id']} to @{p['owner']}: accept up to {p['max_variance_pct']}% for "
+                "this vendor. Nothing changes unless the owner approves it.",
+            ),
+        }
+
     async def done(s: InvoiceState) -> dict:
         return {"state": await db_state(s["invoice_id"])}
 
@@ -515,6 +538,7 @@ def build_graph(deps: Deps) -> StateGraph:
     g.add_node("auditor", auditor)
     g.add_node("await_human", await_human)
     g.add_node("pay", pay)
+    g.add_node("steward", steward_node)
     g.add_node("done", done)
 
     g.add_edge(START, "dispatch")
@@ -537,6 +561,7 @@ def build_graph(deps: Deps) -> StateGraph:
     g.add_edge("analyst", "auditor")
     g.add_edge("auditor", "await_human")
     g.add_conditional_edges("await_human", after_human, ["pay", "done", "await_human"])
-    g.add_edge("pay", END)
+    g.add_edge("pay", "steward")
+    g.add_edge("steward", END)
     g.add_edge("done", END)
     return g

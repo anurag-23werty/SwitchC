@@ -57,6 +57,14 @@ async def get_policy(conn: AsyncConnection) -> Policy:
         approvers=p["approvers"],
         min_extraction_confidence=Decimal(p.get("min_extraction_confidence", "0.70")),
         injection_score_threshold=Decimal(p.get("injection_score_threshold", "0.90")),
+        vendor_exceptions=p.get("vendor_exceptions", []),
+        steward_min_overrides=int(p.get("steward", {}).get("min_overrides", 2)),
+        steward_eligible_flags=p.get("steward", {}).get(
+            "eligible_flags", ["PRICE_VARIANCE"]
+        ),
+        steward_max_variance_pct=Decimal(
+            p.get("steward", {}).get("max_variance_pct", "10.0")
+        ),
     )
 
 
@@ -328,35 +336,90 @@ async def insert_decision(
     return row["id"]
 
 
+_DECISION_TEXT = """d.decision || ' by ' || d.decided_by || ': ' || d.reason
+    || ' [flags: ' || COALESCE(array_to_string(i.flags, ', '), '') || ']'
+    || ' (invoice ' || COALESCE(i.invoice_no, '?') || ', Rs ' || COALESCE(i.total::text, '?')
+    || ')'"""
+
+
+async def sync_decision_knowledge(conn: AsyncConnection, vendor_id: int) -> int:
+    """Mirror this vendor's human decisions into vendor_knowledge (once each)."""
+    cur = await conn.execute(
+        f"""
+        INSERT INTO vendor_knowledge (vendor_id, kind, content, source_decision_id, created_at)
+        SELECT i.vendor_id, 'decision', {_DECISION_TEXT}, d.id, d.created_at
+        FROM decisions d JOIN invoices i ON i.id = d.invoice_id
+        WHERE i.vendor_id = %s AND d.decider_kind = 'human'
+        ON CONFLICT (source_decision_id) DO NOTHING""",
+        (vendor_id,),
+    )
+    return cur.rowcount
+
+
+async def knowledge_to_embed(
+    conn: AsyncConnection, vendor_id: int, model: str
+) -> list[dict]:
+    return await _all(
+        conn,
+        """SELECT id, content FROM vendor_knowledge
+           WHERE vendor_id = %s AND (embedding IS NULL OR embedding_model IS DISTINCT FROM %s)
+           ORDER BY id""",
+        vendor_id,
+        model,
+    )
+
+
+async def set_embedding(
+    conn: AsyncConnection, knowledge_id: int, vector: str, model: str
+) -> None:
+    await conn.execute(
+        "UPDATE vendor_knowledge SET embedding = %s::vector, embedding_model = %s WHERE id = %s",
+        (vector, model, knowledge_id),
+    )
+
+
+_KNOWLEDGE_COLS = """vk.kind, vk.content AS text, vk.created_at, i.id AS invoice_id,
+                     i.invoice_no"""
+_KNOWLEDGE_FROM = """FROM vendor_knowledge vk
+        LEFT JOIN decisions d ON d.id = vk.source_decision_id
+        LEFT JOIN invoices i ON i.id = d.invoice_id"""
+
+
+async def vendor_knowledge_nearest(
+    conn: AsyncConnection, vendor_id: int, query_vector: str, limit: int = 10
+) -> list[dict]:
+    """The vendor's knowledge nearest the query by cosine similarity (pgvector)."""
+    return await _all(
+        conn,
+        f"""
+        SELECT {_KNOWLEDGE_COLS},
+               round((1 - (vk.embedding <=> %s::vector))::numeric, 3) AS score
+        {_KNOWLEDGE_FROM}
+        WHERE vk.vendor_id = %s AND vk.embedding IS NOT NULL
+        ORDER BY vk.embedding <=> %s::vector, vk.id DESC LIMIT %s""",
+        query_vector,
+        vendor_id,
+        query_vector,
+        limit,
+    )
+
+
 async def vendor_knowledge(
     conn: AsyncConnection, vendor_id: int, query: str | None
 ) -> list[dict]:
-    """Notes and past human decisions (with their reasons) for a vendor.
+    """Notes, rule patterns and past human decisions (with their reasons) for a vendor.
 
-    Ranked by word overlap with `query` when one is given. Vector search over
-    the `embedding` column is a Phase 6 upgrade; this is the deterministic base.
+    Ranked by word overlap with `query` when one is given. This is the keyword
+    path: used for the room document, and as a disclosed fallback when the
+    embedding model can't run. The Analyst normally gets pgvector ranking.
     """
-    notes = await _all(
+    await sync_decision_knowledge(conn, vendor_id)
+    items = await _all(
         conn,
-        """
-        SELECT 'note' AS kind, content AS text, created_at, NULL::int AS invoice_id,
-               NULL::text AS invoice_no
-        FROM vendor_knowledge WHERE vendor_id = %s""",
+        f"""SELECT {_KNOWLEDGE_COLS} {_KNOWLEDGE_FROM}
+            WHERE vk.vendor_id = %s ORDER BY vk.id DESC""",
         vendor_id,
     )
-    past = await _all(
-        conn,
-        """
-        SELECT 'decision' AS kind,
-               d.decision || ' by ' || d.decided_by || ': ' || d.reason
-                 || ' [flags: ' || COALESCE(array_to_string(i.flags, ', '), '') || ']' AS text,
-               d.created_at, i.id AS invoice_id, i.invoice_no
-        FROM decisions d JOIN invoices i ON i.id = d.invoice_id
-        WHERE i.vendor_id = %s AND d.decider_kind = 'human'
-        ORDER BY d.id DESC LIMIT 20""",
-        vendor_id,
-    )
-    items = notes + past
     if query:
         words = set(re.findall(r"[a-z0-9]+", query.lower()))
         for item in items:
@@ -368,17 +431,33 @@ async def vendor_knowledge(
 
 
 async def invoice_status(
-    conn: AsyncConnection, vendor_code: str, invoice_no: str
+    conn: AsyncConnection, vendor_code: str, invoice_no: str | None
 ) -> list[dict]:
+    """A vendor's invoice by number, or (no number) its five most recent ones."""
     return await _all(
         conn,
         """
-        SELECT i.id, i.invoice_no, i.state, i.total, i.updated_at
+        SELECT i.id, i.invoice_no, i.state, i.total, i.flags, i.updated_at
         FROM invoices i JOIN vendors v ON v.id = i.vendor_id
-        WHERE v.code = %s AND upper(replace(i.invoice_no, ' ', '')) = upper(replace(%s, ' ', ''))
-        ORDER BY i.id""",
+        WHERE v.code = %s AND i.invoice_no IS NOT NULL
+          AND (%s::text IS NULL
+               OR upper(replace(i.invoice_no, ' ', '')) = upper(replace(%s, ' ', '')))
+        ORDER BY i.id DESC LIMIT 5""",
         vendor_code.upper(),
         invoice_no,
+        invoice_no,
+    )
+
+
+async def vendor_contact(conn: AsyncConnection, username: str) -> dict | None:
+    """A registered vendor contact (for the vendor inbox), with their vendor."""
+    return await _one(
+        conn,
+        """SELECT c.username, c.display_name, v.id AS vendor_id, v.code AS vendor_code,
+                  v.name AS vendor_name, v.phone AS vendor_phone
+           FROM vendor_contacts c JOIN vendors v ON v.id = c.vendor_id
+           WHERE c.username = %s""",
+        username.lstrip("@").lower(),
     )
 
 

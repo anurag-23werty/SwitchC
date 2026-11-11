@@ -6,6 +6,10 @@ uv run khata pending                 # runs paused at the approval gate
 uv run khata decide 2 --as priya approve Matches PO and goods received
 uv run khata show 2
 uv run khata retry 2                 # re-run a run that stopped on an error
+uv run khata rules                   # policy versions and the Policy Steward's proposals
+uv run khata rule 1 --as owner approve Freight up to 4% is agreed with them
+uv run khata steward-demo            # D03, D04 -> proposal -> owner approves -> S01 auto
+uv run khata dashboard               # http://127.0.0.1:8088, read-only
 """
 
 from __future__ import annotations
@@ -159,6 +163,105 @@ async def cmd_retry(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_rules(args: argparse.Namespace) -> int:
+    async with Khata.open() as k:
+        async with k.pool.connection() as conn:
+            versions = await (
+                await conn.execute(
+                    "SELECT version, active, change_summary, proposed_by, approved_by "
+                    "FROM rules ORDER BY version"
+                )
+            ).fetchall()
+        proposals = await k.proposals()
+    for v in versions:
+        print(
+            f"v{v['version']}{' (active)' if v['active'] else ''}: {v['change_summary']} "
+            f"[proposed by {v['proposed_by']}, approved by {v['approved_by']}]"
+        )
+    for p in proposals:
+        print(
+            f"proposal #{p['id']} {p['status']}: {p['summary']}"
+            + (f" -> v{p['new_version']}" if p["new_version"] else "")
+        )
+    return 0
+
+
+async def cmd_rule(args: argparse.Namespace) -> int:
+    from khata.steward import ProposalRefused, decision_message
+
+    parsed = parse_decision(" ".join(args.text))
+    if parsed is None:
+        print("Start the reply with `approve` or `reject`, then the reason.")
+        return 2
+    async with Khata.open() as k:
+        try:
+            res = await k.decide_rule(
+                args.proposal, args.user, parsed["decision"], parsed["reason"]
+            )
+        except ProposalRefused as e:
+            print(f"Not recorded: {e}")
+            return 1
+    print(decision_message(res))
+    return 0
+
+
+async def cmd_steward_demo(args: argparse.Namespace) -> int:
+    """D03 and D04 approved by Priya -> the Steward proposes -> the owner approves ->
+    S01 (same pattern, small) is auto-approved under the new version."""
+    golden = {
+        g["id"]: g
+        for g in yaml.safe_load((ROOT / "evals" / "golden.yaml").read_text())[
+            "invoices"
+        ]
+    }
+    async with Khata.open() as k:
+        for gid in ("D03", "D04"):
+            g = golden[gid]
+            print(f"\n== {gid}")
+            out = await k.submit(g["file"])
+            _print_outcome(out)
+            for h in g["expected"]["human"]:
+                print(f"  <{h['by']}> {h['decision']} {h['reason']}")
+                out = await k.decide(
+                    out.invoice_id, h["by"], h["decision"], h["reason"]
+                )
+                _print_outcome(out)
+        open_ = await k.proposals("proposed")
+        if not open_:
+            print("\nNo proposal was made.")
+            return 1
+        p = open_[-1]
+        print("\n== The Steward's proposal\n  " + p["message"].replace("\n", "\n  "))
+        reason = "Freight up to 4% is agreed with Mumbai Steel"
+        print(f"  <owner> approve {reason}")
+        from khata.steward import decision_message
+
+        res = await k.decide_rule(p["id"], "owner", "approve", reason)
+        print("  [khata-steward] " + decision_message(res))
+        print("\n== S01 (same freight pattern, small order)")
+        out = await k.submit("data/invoices/S01_MST_MST-INV-7840.pdf")
+        _print_outcome(out)
+    ok = out.state == "PAYMENT_DRAFTED" and not out.paused
+    print(
+        "\nS01 auto-approved under the new policy"
+        if ok
+        else "\nS01 was NOT auto-approved"
+    )
+    return 0 if ok else 1
+
+
+async def cmd_dashboard(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from khata.dashboard import create_app
+
+    config = uvicorn.Config(
+        create_app(), host=args.host, port=args.port, log_level="info"
+    )
+    await uvicorn.Server(config).serve()
+    return 0
+
+
 async def cmd_setup_switch(args: argparse.Namespace) -> int:
     from khata.config import get_settings
     from khata.switch_setup import setup
@@ -206,6 +309,21 @@ def main(argv: list[str] | None = None) -> None:
     r = sub.add_parser("retry", help="re-run a run that stopped on an error")
     r.add_argument("invoice", type=int)
     r.set_defaults(fn=cmd_retry)
+    sub.add_parser("rules", help="policy versions and rule proposals").set_defaults(
+        fn=cmd_rules
+    )
+    ru = sub.add_parser("rule", help="the owner's answer to a rule proposal")
+    ru.add_argument("proposal", type=int)
+    ru.add_argument("--as", dest="user", required=True)
+    ru.add_argument("text", nargs="+", help="approve|reject <reason>")
+    ru.set_defaults(fn=cmd_rule)
+    sub.add_parser(
+        "steward-demo", help="D03, D04, the Steward's proposal, the owner, then S01"
+    ).set_defaults(fn=cmd_steward_demo)
+    db = sub.add_parser("dashboard", help="read-only web view of the books")
+    db.add_argument("--host", default="127.0.0.1")
+    db.add_argument("--port", type=int, default=8088)
+    db.set_defaults(fn=cmd_dashboard)
     sub.add_parser(
         "setup-switch", help="register agents, people and rooms on Switch"
     ).set_defaults(fn=cmd_setup_switch)

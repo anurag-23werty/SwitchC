@@ -34,6 +34,7 @@ import httpx
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, ValidationError
 
+from khata import tracing
 from khata.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -309,6 +310,48 @@ class LLM:
         invoice_id: int | None = None,
     ) -> LLMResult[T]:
         """Ask the first working endpoint in `chain` for an answer shaped like `schema`."""
+        with tracing.generation(
+            agent,
+            input={"system": system, "user": user},
+            metadata={"invoice_id": invoice_id, "chain": list(chain)},
+        ) as gen:
+            try:
+                res = await self._structured(
+                    schema,
+                    system=system,
+                    user=user,
+                    chain=chain,
+                    agent=agent,
+                    invoice_id=invoice_id,
+                )
+            except LLMUnavailable as e:
+                gen.update(level="ERROR", status_message=str(e)[:500])
+                raise
+            gen.update(
+                model=res.model,
+                output=res.value.model_dump(mode="json")
+                if tracing.capture_content()
+                else None,
+                metadata={
+                    "invoice_id": invoice_id,
+                    "endpoint": res.endpoint,
+                    "provider": res.provider,
+                    "cached": res.cached,
+                    "attempts": res.attempts,
+                },
+            )
+            return res
+
+    async def _structured(
+        self,
+        schema: type[T],
+        *,
+        system: str,
+        user: str,
+        chain: Sequence[str],
+        agent: str,
+        invoice_id: int | None,
+    ) -> LLMResult[T]:
         js = strict_schema(schema)
         sys_prompt = (
             f"{system}\n\nRespond with a single JSON object matching this JSON schema, "

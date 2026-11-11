@@ -20,7 +20,7 @@ from typing import Any
 import pdfplumber
 from psycopg_pool import AsyncConnectionPool
 
-from khata import repo
+from khata import repo, steward
 from khata.approval import route_approval as apply_policy
 from khata.checks.bank import check_bank_change as bank_check
 from khata.checks.duplicate import check_duplicate as dup_check
@@ -28,6 +28,7 @@ from khata.checks.gst import is_valid_gstin
 from khata.checks.gst import validate_gst as gst_check
 from khata.checks.injection import detect_injection as injection_check
 from khata.checks.matching import three_way_match as match_check
+from khata.embeddings import Embedder, default_embedder, to_pgvector
 from khata.models import CheckReport, Flag, InvoiceData, State
 from khata.payments import NotPayable
 from khata.payments import draft_payment as draft
@@ -60,10 +61,12 @@ class Toolbox:
         payments_dir: Path,
         today: date,
         guard: Any = None,
+        embedder: Embedder | None = None,
     ) -> None:
         """`guard` is an optional khata.llm.PromptGuard: a second injection check."""
         self.pool = pool
         self.guard = guard
+        self.embedder = embedder or default_embedder()
         self.files_root = files_root.resolve()
         self.payments_dir = payments_dir
         self.today = today
@@ -85,6 +88,7 @@ class Toolbox:
                 "get_invoice",
                 "get_invoice_status",
                 "search_vendor_knowledge",
+                "propose_rule_change",
             )
         }
 
@@ -269,9 +273,13 @@ class Toolbox:
                 if row["vendor_id"]
                 else None
             )
-            decision = apply_policy(
-                [Flag(f) for f in row["flags"]], row["total"], policy, vendor
+            flags = [Flag(f) for f in row["flags"]]
+            pct = (
+                await steward.price_variance_pct(conn, invoice_id)
+                if Flag.PRICE_VARIANCE in flags
+                else None
             )
+            decision = apply_policy(flags, row["total"], policy, vendor, pct)
             state = State(row["state"])
             if state in {
                 State.AWAITING_APPROVAL,
@@ -441,6 +449,16 @@ class Toolbox:
         out["total"] = f"{res.total:.2f}"
         return out
 
+    # --- Policy Steward -----------------------------------------------------------
+
+    async def propose_rule_change(
+        self, *, agent: str, invoice_id: int
+    ) -> dict[str, Any]:
+        """After a person approves an invoice, look for a repeated exception and propose
+        a rule for the owner. Proposes only; never changes the policy."""
+        async with self.pool.connection() as conn, conn.transaction():
+            return await steward.propose(conn, invoice_id)
+
     # --- Reading ---------------------------------------------------------------
 
     async def get_invoice(self, *, agent: str, invoice_id: int) -> dict[str, Any]:
@@ -449,9 +467,10 @@ class Toolbox:
             return await repo.get_invoice(conn, invoice_id)
 
     async def get_invoice_status(
-        self, *, agent: str, vendor_code: str, invoice_no: str
+        self, *, agent: str, vendor_code: str, invoice_no: str | None = None
     ) -> dict[str, Any]:
-        """Where a vendor's invoice is in the process (for the vendor liaison)."""
+        """Where a vendor's invoice is in the process (for the vendor liaison).
+        Without a number: that vendor's five most recent invoices."""
         async with self.pool.connection() as conn:
             rows = await repo.invoice_status(conn, vendor_code, invoice_no)
         return {"vendor_code": vendor_code, "invoice_no": invoice_no, "matches": rows}
@@ -459,8 +478,9 @@ class Toolbox:
     async def search_vendor_knowledge(
         self, *, agent: str, vendor_code: str, query: str = ""
     ) -> dict[str, Any]:
-        """What the team knows about a vendor: notes and past decisions with reasons."""
-        async with self.pool.connection() as conn:
+        """What the team knows about a vendor: notes, agreed rules and past decisions with
+        reasons, nearest the query first (local embeddings + pgvector)."""
+        async with self.pool.connection() as conn, conn.transaction():
             row = await (
                 await conn.execute(
                     "SELECT id, name FROM vendors WHERE code = %s",
@@ -468,9 +488,43 @@ class Toolbox:
                 )
             ).fetchone()
             if row is None:
-                return {"vendor_code": vendor_code, "items": []}
-            items = await repo.vendor_knowledge(conn, row["id"], query or None)
-        return {"vendor_code": vendor_code, "vendor": row["name"], "items": items[:10]}
+                return {"vendor_code": vendor_code, "items": [], "retrieval": None}
+            await repo.sync_decision_knowledge(conn, row["id"])
+            try:
+                todo = await repo.knowledge_to_embed(
+                    conn, row["id"], self.embedder.name
+                )
+                if todo:
+                    vecs = await self.embedder.embed([t["content"] for t in todo])
+                    for t, v in zip(todo, vecs, strict=True):
+                        await repo.set_embedding(
+                            conn, t["id"], to_pgvector(v), self.embedder.name
+                        )
+                if query:
+                    (qv,) = await self.embedder.embed([query])
+                    items = await repo.vendor_knowledge_nearest(
+                        conn, row["id"], to_pgvector(qv), 10
+                    )
+                else:
+                    items = (await repo.vendor_knowledge(conn, row["id"], None))[:10]
+                retrieval = f"pgvector cosine over {self.embedder.name}"
+            except Exception as e:  # the model can't load: say so, rank by keywords
+                logger.warning("embeddings unavailable, keyword ranking: %s", e)
+                items = (await repo.vendor_knowledge(conn, row["id"], query or None))[
+                    :10
+                ]
+                retrieval = (
+                    f"keyword overlap (embeddings unavailable: {type(e).__name__})"
+                )
+        for it in items:
+            if "score" in it:
+                it["score"] = float(it["score"])
+        return {
+            "vendor_code": vendor_code,
+            "vendor": row["name"],
+            "retrieval": retrieval,
+            "items": items,
+        }
 
 
 # --- Code-node helpers (called by the workflow itself, not offered to agents) --------
