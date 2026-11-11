@@ -1,6 +1,6 @@
 # Khata — an agentic accounts-payable room on Switch
 
-> Status: Phase 5 (evals: 31 labelled invoices, fraud/duplicate recall and injection resistance 100%) done. The full README lands in Phase 7.
+> Status: Phase 6 (stretch: Policy Steward, pgvector vendor knowledge, ledger dashboard, vendor inbox + Liaison, single-VM deploy) done. The full README lands in Phase 7.
 
 Khata turns a finance team's chat channel into a [Switch](https://github.com/sandbox-quantum/switch)
 room where AI agents receive, read, verify and match vendor invoices, explain exceptions,
@@ -41,7 +41,7 @@ providers, the approval gate, retries, Prompt Guard) is in
 ## Khata in the room
 
 ```sh
-make setup-switch   # 7 agents, the finance team's accounts, #ap-desk + #ap-audit from switch/khata.template.yaml
+make setup-switch   # 9 agents, the team's and vendor contacts' accounts, #ap-desk, #ap-audit, #ap-inbox
 make serve          # the agents go to work
 ```
 
@@ -60,3 +60,20 @@ match, never by an LLM. What the eval found and fixed: [docs/evals.md](docs/eval
 
 How Khata uses Switch: [docs/switch-room.md](docs/switch-room.md) and
 [docs/switch-notes.md](docs/switch-notes.md).
+
+## Phase 6
+
+- **Policy Steward** (`khata-steward`): after people approve the same exception for a
+  vendor twice, it proposes a rule in `#ap-desk`; only the owner can accept it, which
+  writes a new policy version. `make steward-demo`. [docs/policy-steward.md](docs/policy-steward.md)
+- **Vendor knowledge in pgvector**: notes, agreed rules and every human decision are
+  embedded locally (fastembed `bge-small-en-v1.5`, no API) and the Analyst gets the
+  nearest first, so "transport costs" finds a freight approval.
+- **Ledger** (`make dashboard`, http://127.0.0.1:8088): invoice queue, each invoice's
+  full history, the audit trail, policy versions and proposals, metrics. Read-only:
+  decisions stay in the room.
+- **Vendor inbox** (`#ap-inbox`, Telegram-ready) with **`khata-liaison`**: vendors ask
+  for status and send PDFs; bank-change requests are refused and the owner alerted.
+  [docs/vendor-inbox.md](docs/vendor-inbox.md)
+- **Deploy**: Dockerfile, `deploy/docker-compose.deploy.yml` with Caddy (HTTPS), and
+  optional Langfuse traces. [docs/deploy.md](docs/deploy.md)

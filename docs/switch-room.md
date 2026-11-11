@@ -1,6 +1,6 @@
 # Khata in Switch (Phase 4)
 
-Khata's seven agents are Switch participants. Invoices only get in through a
+Khata's nine agents are Switch participants. Invoices only get in through a
 Switch room, and people only decide in one. Postgres is the system of record;
 Switch is where the work happens.
 
@@ -30,6 +30,8 @@ uv run python scripts/room_demo.py
 | `khata-analyst` | addressed | The note for the approver, citing past decisions |
 | `khata-auditor` | addressed | Second opinion on the note, on another LLM provider |
 | `khata-payer` | addressed | Posts the NEFT draft CSV into the thread. Never pays |
+| `khata-steward` | addressed (#ap-desk and #ap-audit) | Proposes a rule after repeated approvals of the same exception; only the owner can accept it (Phase 6, [policy-steward.md](policy-steward.md)) |
+| `khata-liaison` | all (#ap-inbox), addressed (#ap-desk) | Answers vendors about their own invoices, forwards their PDFs, refuses bank changes and alerts the owner (Phase 6, [vendor-inbox.md](vendor-inbox.md)) |
 
 Each agent is registered over the Agent Protocol (`POST /agents`), holds its own
 connection to the room (an SSE stream plus a heartbeat), and posts as itself, with
@@ -58,12 +60,14 @@ and it hands off to the next agent **by name** with `send_targeted_message`:
 A Switch template (version 1, a room **group** "Khata AP"), deployed by
 `khata setup-switch` through the Gateway's `POST /gateway/rooms/from-yaml`:
 
-- **#ap-desk**: all seven agents, the deployer, Priya (finance manager), the owner and
+- **#ap-desk**: all the agents, the deployer, Priya (finance manager), the owner and
   Ravi (clerk); instructions describing each agent and how to approve; aliases
   (`@desk`, `@router`); a kickoff that states the approval policy in force.
   The `policy` param is filled in from Khata's `rules` table at deploy time, so the
   kickoff never disagrees with the database.
-- **#ap-audit**: the Router and Auditor plus the approvers: the decision feed.
+- **#ap-audit**: the Router, Auditor and Steward plus the approvers: the decision feed.
+- **#ap-inbox** (its own single-room template, `switch/khata-inbox.template.yaml`):
+  the Liaison and the registered vendor contacts. Bridged to Telegram in production.
 - A link from #ap-desk to #ap-audit.
 
 The agents aren't created by the template (it has no `agents:` block). Switch's

@@ -228,3 +228,32 @@ stretch.
 - Switch message/thread ids are Switch's own, not Mattermost post ids.
 - Agents registered with the registration token have no owner, so they can't run
   `create_room_from_yaml`; the Gateway's `POST /gateway/rooms/from-yaml` (as admin) works.
+
+## Found in Phase 6
+
+- **New agents join existing rooms by invitation.** A room template only runs once,
+  so a ninth agent added later isn't in the rooms. `invite_agent_to_room` from an
+  agent that is already a member works and is idempotent (re-inviting a member is
+  not an error); `khata setup-switch` invites every agent missing from `#ap-desk` /
+  `#ap-audit`. Inviting into a room the inviter isn't in is refused (403 "Not
+  authorized to change this room's membership").
+- **A single-room template** uses top-level `room:` (and `kickoff:`), not
+  `group:` + `rooms:`. The vendor inbox is deployed from its own template
+  (`switch/khata-inbox.template.yaml`) so it can be added to an existing group's
+  stack.
+- **`list_rooms` only shows rooms the calling agent is in.** The inbox contains only
+  the Liaison, so setup asks both the Router and the Liaison which rooms exist
+  (otherwise a re-run would provision a second inbox).
+- **`post_message` returns `{"event_id": ...}`.** Khata records the thread of a
+  Steward proposal from the proposal's own message event (the Dispatcher listens with
+  `filter=all` and sees agents' posts), which carries the same `message_id` a reply's
+  `thread_id` will.
+- **Concurrent stream opens can fail once.** When nine agents open their event
+  streams at the same moment, switch-core 0.31.0 sometimes answers 500 ("No
+  incarnation drawn: a connection is opened inside a recorded move"). The client's
+  reconnect with back-off recovers within a second; nothing is lost because each
+  stream resumes from its stored cursor.
+- **Telegram needs no public URL.** Switch's Telegram bridge long-polls the Bot API,
+  so a vendor inbox on Telegram works from a laptop or a VM without ingress. A chat
+  becomes a room when the bot is added to the group; the agent is then added with
+  `!invite-agent @khata-liaison` (see `docs/vendor-inbox.md`).

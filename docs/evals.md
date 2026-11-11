@@ -82,3 +82,18 @@ Also found and fixed:
   take 1–3 s. Later runs reuse the cache, so their per-invoice times are near zero.
 - **31 invoices are a small set**, generated from our own fixtures. They cover every flag
   and route, but they are clean digital PDFs, not scans.
+
+## Re-run after Phase 6 (`20261106-234514`)
+
+Phase 6 changed what the Analyst sees (vendor knowledge now ranked by pgvector, with
+decision texts that include invoice numbers and totals) and added the Steward node, so
+the eval was run again. Every exact-match result is unchanged: fraud, duplicate and
+injection resistance 100%, decision/routing/flag accuracy 100%, no false holds or
+wrong rejections, critical fields 100%, D04 cites D03.
+
+It ran after the night's free quotas were spent (OpenRouter 50/day, Groq qwen 200k
+tokens/day), so the Auditor had no allowed model for 12 invoices (it may not use the
+Analyst's model) and the G-Eval judge (qwen) scored only one note. Those invoices were
+still decided correctly: the Auditor is advice, and a missing audit is recorded, not
+guessed. The scorecard above (`evals/report.md`) is therefore still the last run with
+a complete judge (`20261106-211447`); it will be regenerated once the quotas reset.
