@@ -1,4 +1,4 @@
-"""Khata in Switch: seven agents working #ap-desk and #ap-audit. `uv run khata serve`.
+"""Khata in Switch: nine agents working #ap-desk, #ap-audit and #ap-inbox. `uv run khata serve`.
 
 Each Khata agent holds its own Agent Protocol connection to #ap-desk and speaks
 in the room as itself. The Dispatcher listens to everything posted there
@@ -10,6 +10,10 @@ in the room as itself. The Dispatcher listens to everything posted there
     the approval gate               -> Router tags the approver the policy names
     "approve <reason>" in the thread-> Dispatcher resumes the run; Khata checks the
                                        sender may make that decision
+    a repeated approved exception   -> Steward posts a rule proposal; the owner's
+                                       reply in its thread makes a new policy version
+    a vendor writes in #ap-inbox    -> Liaison answers (code, no LLM), forwards PDFs
+                                       to #ap-desk, alerts the owner on bank changes
     every gate, decision and draft  -> Router posts it to #ap-audit and refreshes
                                        the room documents (Postgres -> room)
 
@@ -21,31 +25,38 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from khata import liaison, repo, steward
 from khata.config import ROOT, Settings
 from khata.money import inr
 from khata.runtime import Khata, Outcome
 from khata.switch_client import KeyStore, RoomConnection, SwitchAgent, SwitchError
 from khata.switch_docs import DOCS
 from khata.switch_setup import AGENTS, AUDIT, DESK, SwitchState
+from khata.switch_setup import INBOX as INBOX_ROOM
 
 log = logging.getLogger("khata.room")
 
 INBOX = ROOT / "data" / "inbox"
-DISPATCHER, INTAKE, ROUTER, PAYER = (
+DISPATCHER, INTAKE, ROUTER, PAYER, STEWARD, LIAISON = (
     "khata-dispatcher",
     "khata-intake",
     "khata-router",
     "khata-payer",
+    "khata-steward",
+    "khata-liaison",
 )
 IGNORED_SENDERS = {"switch-admin", "system", "admin"}
-FEED_AGENTS = {ROUTER, PAYER}
+FEED_AGENTS = {ROUTER, PAYER}  # the Steward feeds its own proposal posts
+PROPOSAL_POST = re.compile(r"^\*\*Rule proposal #(\d+)\*\*")
 HELP = (
     "I'm Khata's front desk. Post a vendor invoice as a PDF here and the team takes it "
     "from there, in its own thread. To decide an invoice the Router tags you on, reply "
@@ -55,7 +66,7 @@ HELP = (
 
 @dataclass
 class Job:
-    kind: str  # invoice | decision | retry
+    kind: str  # invoice | decision | retry | rule
     thread: str
     sender: str
     message_id: str
@@ -63,6 +74,7 @@ class Job:
     invoice_id: int | None = None
     decision: str | None = None
     reason: str | None = None
+    proposal_id: int | None = None
 
 
 def _safe_name(name: str) -> str:
@@ -87,7 +99,20 @@ class KhataRoom:
             for n, a in self.agents.items()
         }
         self.feed = RoomConnection(self.agents[ROUTER], self.audit, "addressed")
-        self.ready = {n: asyncio.Event() for n in [*self.conns, "feed"]}
+        # The vendor inbox: a Mattermost channel on the demo stack, or the room
+        # Switch adopted for a Telegram group (KHATA_INBOX_ROOM_ID).
+        self.inbox = os.environ.get("KHATA_INBOX_ROOM_ID") or state.rooms.get(
+            INBOX_ROOM
+        )
+        self.inbox_conn = (
+            RoomConnection(self.agents[LIAISON], self.inbox, "all")
+            if self.inbox
+            else None
+        )
+        self.ready = {
+            n: asyncio.Event()
+            for n in [*self.conns, "feed", *(["inbox"] if self.inbox else [])]
+        }
         self.invoices: asyncio.Queue[Job] = asyncio.Queue()
         self.decisions: asyncio.Queue[Job] = asyncio.Queue()
         self.doc_ids: dict[str, str] = {}
@@ -99,40 +124,45 @@ class KhataRoom:
         async for ev in conn.events():
             if ev.kind == "connection_state":
                 self.ready[name].set()
-            elif name == DISPATCHER and ev.kind == "message":
+            elif name in (DISPATCHER, "inbox") and ev.kind == "message":
                 try:
-                    await self.on_message(ev.payload)
+                    if name == DISPATCHER:
+                        await self.on_message(ev.payload)
+                    else:
+                        await self.on_inbox(ev.payload)
                 except Exception:  # one bad event must not stop the room
                     log.exception(
                         "could not handle message %s", ev.payload.get("message_id")
                     )
             if name == DISPATCHER and ev.sequence is not None:
-                await self._save_cursor(ev.sequence)
+                await self._save_cursor(DISPATCHER, self.desk, ev.sequence)
+            elif name == "inbox" and ev.sequence is not None and self.inbox:
+                await self._save_cursor(LIAISON, self.inbox, ev.sequence)
 
-    async def _load_cursor(self) -> int | None:
+    async def _load_cursor(self, agent: str, room: str) -> int | None:
         async with self.k.pool.connection() as conn:
             row = await (
                 await conn.execute(
                     "SELECT cursor FROM switch_cursors WHERE agent = %s AND room_id = %s",
-                    (DISPATCHER, self.desk),
+                    (agent, room),
                 )
             ).fetchone()
         return row["cursor"] if row else None
 
-    async def _save_cursor(self, seq: int) -> None:
+    async def _save_cursor(self, agent: str, room: str, seq: int) -> None:
         async with self.k.pool.connection() as conn:
             await conn.execute(
                 """INSERT INTO switch_cursors (agent, room_id, cursor) VALUES (%s, %s, %s)
                    ON CONFLICT (agent, room_id)
                    DO UPDATE SET cursor = EXCLUDED.cursor, updated_at = now()""",
-                (DISPATCHER, self.desk, seq),
+                (agent, room, seq),
             )
             await conn.commit()
 
     async def run(self) -> None:
         # The Dispatcher picks up where it stopped: posts made while Khata was down
         # are delivered on reconnect (and switch_inbox makes repeats harmless).
-        cursor = await self._load_cursor()
+        cursor = await self._load_cursor(DISPATCHER, self.desk)
         if cursor is not None:
             self.conns[DISPATCHER] = RoomConnection(
                 self.agents[DISPATCHER], self.desk, "all", cursor=cursor
@@ -145,10 +175,29 @@ class KhataRoom:
         listeners.append(
             asyncio.create_task(self._listen("feed", self.feed), name="feed")
         )
+        if self.inbox:
+            inbox_cursor = await self._load_cursor(LIAISON, self.inbox)
+            if inbox_cursor is not None:
+                self.inbox_conn = RoomConnection(
+                    self.agents[LIAISON], self.inbox, "all", cursor=inbox_cursor
+                )
+            listeners.append(
+                asyncio.create_task(
+                    self._listen("inbox", self.inbox_conn), name="inbox"
+                )
+            )
         await asyncio.wait_for(
             asyncio.gather(*(e.wait() for e in self.ready.values())), timeout=60
         )
-        log.info("all %d agents connected to #%s and #%s", len(self.conns), DESK, AUDIT)
+        log.info(
+            "all %d agents connected to #%s and #%s%s",
+            len(self.conns),
+            DESK,
+            AUDIT,
+            f", the Vendor Liaison to the vendor inbox ({self.inbox})"
+            if self.inbox
+            else "",
+        )
         await self.sync_docs()
         for invoice_id in await self.k.unfinished():
             thread = await self._thread_of(invoice_id)
@@ -168,7 +217,9 @@ class KhataRoom:
 
     # -- room -> Khata -----------------------------------------------------------
 
-    async def _claim(self, p: dict[str, Any], kind: str) -> bool:
+    async def _claim(
+        self, p: dict[str, Any], kind: str, room: str | None = None
+    ) -> bool:
         """Record the post; False if it was handled before (a redelivery)."""
         async with self.k.pool.connection() as conn:
             row = await (
@@ -178,7 +229,7 @@ class KhataRoom:
                        ON CONFLICT (message_id) DO NOTHING RETURNING message_id""",
                     (
                         p["message_id"],
-                        self.desk,
+                        room or self.desk,
                         p.get("thread_id"),
                         p.get("sender_name") or "?",
                         kind,
@@ -209,6 +260,10 @@ class KhataRoom:
                 )
             ).fetchone()
 
+    async def _proposal_for_thread(self, thread: str) -> dict[str, Any] | None:
+        async with self.k.pool.connection() as conn:
+            return await steward.for_thread(conn, thread)
+
     async def _thread_of(self, invoice_id: int) -> str | None:
         async with self.k.pool.connection() as conn:
             row = await (
@@ -220,7 +275,18 @@ class KhataRoom:
 
     async def on_message(self, p: dict[str, Any]) -> None:
         sender = p.get("sender_name") or ""
-        if sender in AGENTS or sender in IGNORED_SENDERS or not p.get("message_id"):
+        if sender == STEWARD and not p.get("thread_id") and p.get("message_id"):
+            m = PROPOSAL_POST.match((p.get("body") or "").strip())
+            if m:  # the proposal's own post: its id is the thread replies will carry
+                async with self.k.pool.connection() as conn:
+                    await steward.set_thread(
+                        conn, int(m.group(1)), self.desk, p["message_id"]
+                    )
+                    await conn.commit()
+        forwarded = sender == LIAISON and bool(p.get("attachments"))
+        if (sender in AGENTS and not forwarded) or sender in IGNORED_SENDERS:
+            return
+        if not p.get("message_id"):
             return
         if not await self._claim(p, "received"):
             return
@@ -251,7 +317,12 @@ class KhataRoom:
                 )
                 path.write_bytes(data)
                 await desk.address(
-                    f"New invoice from @{sender}: `{att['filename']}`. Over to you.",
+                    (
+                        f"New invoice from the vendor inbox (via @{sender}): "
+                        if forwarded
+                        else f"New invoice from @{sender}: "
+                    )
+                    + f"`{att['filename']}`. Over to you.",
                     [INTAKE],
                     thread,
                 )
@@ -259,6 +330,30 @@ class KhataRoom:
                     Job("invoice", thread, sender, msg_id, path=path)
                 )
             await self._set_kind(msg_id, "invoice", None)
+            return
+
+        proposal = (
+            await self._proposal_for_thread(thread) if p.get("thread_id") else None
+        )
+        if proposal is not None:
+            res = await self.k.gw.call(
+                "dispatcher", "classify_input", text=body, in_invoice_thread=True
+            )
+            if res["kind"] == "decision":
+                await self._set_kind(msg_id, "rule_decision", None)
+                await self.decisions.put(
+                    Job(
+                        "rule",
+                        thread,
+                        sender,
+                        msg_id,
+                        decision=res["decision"],
+                        reason=res["reason"],
+                        proposal_id=proposal["id"],
+                    )
+                )
+            else:
+                await self._set_kind(msg_id, "chat", None)
             return
 
         inv = await self._invoice_for_thread(thread) if p.get("thread_id") else None
@@ -301,6 +396,94 @@ class KhataRoom:
             )
         else:
             await self._set_kind(msg_id, "chat", inv["id"])
+
+    # -- the vendor inbox (Vendor Liaison) ------------------------------------------
+
+    async def on_inbox(self, p: dict[str, Any]) -> None:
+        """A vendor's message. Plain code; nothing here reaches an LLM."""
+        sender = p.get("sender_name") or ""
+        if sender in AGENTS or sender in IGNORED_SENDERS or not p.get("message_id"):
+            return
+        if not await self._claim(p, "vendor", self.inbox):
+            return
+        msg_id = p["message_id"]
+        thread = p.get("thread_id") or msg_id
+        body = (p.get("body") or "").strip()
+        out = self.inbox_conn
+        assert out is not None
+        async with self.k.pool.connection() as conn:
+            staff = await repo.person(conn, sender)
+            contact = await repo.vendor_contact(conn, sender)
+            company = (await repo.get_company(conn)).name
+            owner = (await repo.get_policy(conn)).approvers["owner"]
+        if staff is not None:
+            await self._set_kind(msg_id, "staff", None)
+            return
+        if contact is None:
+            await self._set_kind(msg_id, "unregistered", None)
+            await out.post(liaison.not_registered(company), thread)
+            return
+        pdfs = [
+            a
+            for a in p.get("attachments") or []
+            if (a.get("filename") or "").lower().endswith(".pdf")
+        ]
+        intent = liaison.classify(body, bool(pdfs))
+        await self._set_kind(msg_id, f"vendor_{intent.kind}", None)
+        if intent.kind == "invoice_upload":
+            for att in pdfs:
+                data = await self.agents[LIAISON].download_media(self.inbox, att["mxc"])
+                await self.agents[LIAISON].upload_media(
+                    self.desk,
+                    [(att["filename"], data, "application/pdf")],
+                    liaison.upload_caption(contact, att["filename"]),
+                    None,
+                )
+                await out.post(liaison.upload_ack(att["filename"]), thread)
+        elif intent.kind == "bank_change":
+            await out.post(liaison.bank_change_reply(contact), thread)
+            await self.conns[LIAISON].post(
+                liaison.bank_change_alert(contact, owner, body), None
+            )
+            await self.feed.post(
+                f"**Vendor Liaison**: {contact['vendor_name']} asked in the vendor inbox to "
+                "change bank details. Refused; owner alerted to call the number on file.",
+                None,
+            )
+            async with self.k.pool.connection() as conn:
+                await conn.execute(
+                    """INSERT INTO audit_log (actor, actor_kind, action, reason, details)
+                       VALUES (%s, 'agent', 'vendor_bank_change_request', %s, %s)""",
+                    (
+                        LIAISON,
+                        f"{sender} ({contact['vendor_code']}) asked to change bank details",
+                        json.dumps({"message_id": msg_id, "text": body[:1000]}),
+                    ),
+                )
+                await conn.commit()
+        elif intent.kind == "status":
+            lines = []
+            for no in intent.invoice_nos or [None]:
+                res = await self.k.gw.call(
+                    "vendor_liaison",
+                    "get_invoice_status",
+                    vendor_code=contact["vendor_code"],
+                    invoice_no=no,
+                )
+                if res["matches"]:
+                    lines += [
+                        liaison.status_line(r) for r in res["matches"][: 1 if no else 5]
+                    ]
+                elif no:
+                    lines.append(
+                        f"{no}: I can't find this one from {contact['vendor_name']}. If it "
+                        "hasn't reached us, send it here as a PDF."
+                    )
+            await out.post(
+                "\n".join(lines) or "I don't have any invoices from you yet.", thread
+            )
+        else:
+            await out.post(liaison.help_text(contact), thread)
 
     # -- Khata -> room ---------------------------------------------------------------
 
@@ -352,7 +535,35 @@ class KhataRoom:
                     "to the bank yourself. Khata never pays.",
                     job.thread,
                 )
+        proposal = out.values.get("proposal")
+        if proposal:
+            await self._post_proposal(proposal["id"])
         await self.sync_docs(only=("khata-decisions-log", "khata-vendor-knowledge"))
+
+    async def _post_proposal(self, proposal_id: int) -> None:
+        """The Steward's proposal, as its own thread in #ap-desk, tagging the owner."""
+        async with self.k.pool.connection() as conn:
+            p = await steward.describe(conn, proposal_id)
+        if p["switch_thread_id"] or p["status"] != "proposed":
+            return
+        res = await self.conns[STEWARD].post(p["message"], None)
+        if res.get(
+            "event_id"
+        ):  # replaced by the message id when the post's event arrives
+            async with self.k.pool.connection() as conn:
+                row = await steward.for_thread(conn, res["event_id"])
+                if row is None:
+                    await conn.execute(
+                        "UPDATE rule_proposals SET switch_room_id = %s, switch_thread_id = "
+                        "COALESCE(switch_thread_id, %s) WHERE id = %s",
+                        (self.desk, res["event_id"], proposal_id),
+                    )
+                    await conn.commit()
+        await self.feed.post(
+            f"**Policy Steward**: rule proposal #{proposal_id} for @{p['owner']}: "
+            f"{p['summary']}.",
+            None,
+        )
 
     async def _work(self, q: asyncio.Queue[Job]) -> None:
         while True:
@@ -378,6 +589,9 @@ class KhataRoom:
                 job.path, room_id=self.desk, thread_id=job.thread, on_log=on_log
             )
             await self._set_kind(job.message_id, "invoice", out.invoice_id)
+        elif job.kind == "rule":
+            await self._decide_rule(job)
+            return
         elif job.kind == "retry":
             out = await self.k.retry(job.invoice_id, on_log=on_log)
         else:
@@ -398,6 +612,34 @@ class KhataRoom:
                 on_log=on_log,
             )
         await self._after(job, out)
+
+    async def _decide_rule(self, job: Job) -> None:
+        assert job.proposal_id is not None
+        st = self.conns[STEWARD]
+        try:
+            res = await self.k.decide_rule(
+                job.proposal_id,
+                job.sender,
+                job.decision or "",
+                job.reason or "",
+                message_id=job.message_id,
+            )
+        except steward.ProposalRefused as e:
+            await st.post(f"@{job.sender} not recorded: {e}.", job.thread)
+            return
+        text = steward.decision_message(res)
+        await st.post(text, job.thread)
+        await self.feed.post(
+            f"**Policy Steward**: {job.sender} {res['status']} rule proposal "
+            f"#{job.proposal_id} ({job.reason}). "
+            + (
+                f"Policy v{res['new_version']} is active."
+                if res["new_version"]
+                else "Policy unchanged."
+            ),
+            None,
+        )
+        await self.sync_docs(only=("khata-approval-policy", "khata-vendor-knowledge"))
 
     # -- room documents (Postgres -> room) -----------------------------------------
 

@@ -47,9 +47,11 @@ async def channel_id(c: httpx.AsyncClient, name: str) -> str:
     return r.json()["id"]
 
 
-async def post_file(user: str, path: Path, caption: str) -> str:
+async def post_file(
+    user: str, path: Path, caption: str, channel: str = "ap-desk"
+) -> str:
     c = await session(user)
-    ch = await channel_id(c, "ap-desk")
+    ch = await channel_id(c, channel)
     up = await c.post(
         "/files",
         data={"channel_id": ch},
@@ -65,9 +67,19 @@ async def post_file(user: str, path: Path, caption: str) -> str:
     return r.json()["id"]
 
 
-async def reply(user: str, root: str, text: str) -> str:
+async def post(user: str, channel: str, text: str) -> str:
+    """A new top-level post, as `user`."""
     c = await session(user)
-    ch = await channel_id(c, "ap-desk")
+    ch = await channel_id(c, channel)
+    r = await c.post("/posts", json={"channel_id": ch, "message": text})
+    r.raise_for_status()
+    await c.aclose()
+    return r.json()["id"]
+
+
+async def reply(user: str, root: str, text: str, channel: str = "ap-desk") -> str:
+    c = await session(user)
+    ch = await channel_id(c, channel)
     r = await c.post(
         "/posts", json={"channel_id": ch, "message": text, "root_id": root}
     )
@@ -96,9 +108,11 @@ async def thread(root: str, user: str = "user") -> list[dict]:
     return out
 
 
-async def latest(user: str = "user", n: int = 15) -> list[dict]:
+async def latest(
+    user: str = "user", n: int = 15, channel: str = "ap-desk"
+) -> list[dict]:
     c = await session(user)
-    ch = await channel_id(c, "ap-desk")
+    ch = await channel_id(c, channel)
     data = (await c.get(f"/channels/{ch}/posts", params={"per_page": 100})).json()
     roots = [data["posts"][i] for i in data["order"] if not data["posts"][i]["root_id"]]
     await c.aclose()

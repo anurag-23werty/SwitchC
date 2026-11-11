@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,16 +30,23 @@ from khata.db import make_pool
 from khata.mattermost import MattermostAdmin
 from khata.repo import get_policy
 from khata.switch_admin import GatewayAdmin, room_members_rule
-from khata.switch_client import AgentIdentity, KeyStore, SwitchAgent, register_agent
+from khata.switch_client import (
+    AgentIdentity,
+    KeyStore,
+    SwitchAgent,
+    SwitchError,
+    register_agent,
+)
 from khata.switch_docs import policy_text
 
 log = logging.getLogger("khata.setup")
 
 TEMPLATE = ROOT / "switch" / "khata.template.yaml"
-STATE = ROOT / ".khata-switch.json"
-STACK_ENV = ROOT / "switch" / "stack" / ".env"
-MATTERMOST_URL = "http://localhost:8065"
-DESK, AUDIT = "ap-desk", "ap-audit"
+INBOX_TEMPLATE = ROOT / "switch" / "khata-inbox.template.yaml"
+STATE = Path(os.environ.get("KHATA_SWITCH_STATE", ROOT / ".khata-switch.json"))
+STACK_ENV = Path(os.environ.get("KHATA_STACK_ENV", ROOT / "switch" / "stack" / ".env"))
+MATTERMOST_URL = os.environ.get("KHATA_MATTERMOST_URL", "http://localhost:8065")
+DESK, AUDIT, INBOX = "ap-desk", "ap-audit", "ap-inbox"
 
 AGENTS: dict[str, tuple[str, str]] = {
     "khata-dispatcher": (
@@ -69,7 +77,21 @@ AGENTS: dict[str, tuple[str, str]] = {
         "Khata Payer",
         "Drafts NEFT bulk-upload files and journals. Never pays.",
     ),
+    "khata-steward": (
+        "Khata Policy Steward",
+        "Spots exceptions people keep approving and proposes a rule; the owner decides.",
+    ),
+    "khata-liaison": (
+        "Khata Vendor Liaison",
+        "Answers vendors in the vendor inbox about their own invoices. Never changes bank details.",
+    ),
 }
+# Which agents belong in which room. The template creates rooms with these;
+# setup also invites any that are missing, so a new agent joins existing rooms.
+ROOM_AGENTS = {
+    "ap-desk": list(AGENTS),
+    "ap-audit": ["khata-router", "khata-auditor", "khata-steward"],
+}  # #ap-inbox holds only the Liaison, from its own template
 
 
 @dataclass
@@ -91,7 +113,9 @@ class SwitchState:
 def people_password() -> str:
     """The demo team's Mattermost password: KHATA_DEMO_PASSWORD in .env, created once."""
     env_file = ROOT / ".env"
-    current = dotenv_values(env_file).get("KHATA_DEMO_PASSWORD")
+    current = os.environ.get("KHATA_DEMO_PASSWORD") or dotenv_values(env_file).get(
+        "KHATA_DEMO_PASSWORD"
+    )
     if current:
         return current
     pw = "Khata-" + secrets.token_urlsafe(9)
@@ -121,7 +145,7 @@ async def register_all(s: Settings) -> dict[str, AgentIdentity]:
 async def ensure_people(mm: MattermostAdmin, team: str) -> list[str]:
     pw = people_password()
     created = []
-    for p in fx.PEOPLE:
+    for p in [*fx.PEOPLE, *fx.VENDOR_CONTACTS]:
         first, _, last = p["display_name"].partition(" ")
         user, new = await mm.ensure_user(
             p["username"],
@@ -138,7 +162,7 @@ async def ensure_people(mm: MattermostAdmin, team: str) -> list[str]:
 
 async def find_rooms(agent: SwitchAgent) -> dict[str, str]:
     rooms = await agent.op("list_rooms")
-    return {r["name"]: r["room_id"] for r in rooms if r["name"] in (DESK, AUDIT)}
+    return {r["name"]: r["room_id"] for r in rooms if r["name"] in (DESK, AUDIT, INBOX)}
 
 
 def _room_ids(result: dict[str, Any]) -> dict[str, str]:
@@ -161,9 +185,11 @@ async def setup(s: Settings) -> dict[str, Any]:
         )
 
         router = SwitchAgent(agents["khata-router"], s.switch_api_url)
+        liaison = SwitchAgent(agents["khata-liaison"], s.switch_api_url)
         try:
-            rooms = await find_rooms(router)
-            if len(rooms) < 2:
+            # The inbox has only the Liaison in it, so ask both who sees what.
+            rooms = await find_rooms(liaison) | await find_rooms(router)
+            if {DESK, AUDIT} - set(rooms):
                 pool = make_pool(s.khata_database_url, max_size=1)
                 await pool.open()
                 try:
@@ -181,19 +207,49 @@ async def setup(s: Settings) -> dict[str, Any]:
                     raise RuntimeError(f"template errors: {errors}")
                 rooms = _room_ids(result) or await find_rooms(router)
                 report["rooms_created"] = True
-            missing = {DESK, AUDIT} - set(rooms)
+            if INBOX not in rooms:
+                async with GatewayAdmin(s.switch_gateway_url) as gw:
+                    await gw.login(s.switch_gateway_email, s.switch_gateway_password)
+                    result = await gw.rooms_from_yaml(
+                        INBOX_TEMPLATE.read_text(), {}, "Khata vendor inbox"
+                    )
+                if result.get("errors"):
+                    raise RuntimeError(f"inbox template errors: {result['errors']}")
+                rooms |= await find_rooms(liaison)
+                report["inbox_created"] = True
+            missing = {DESK, AUDIT, INBOX} - set(rooms)
             if missing:
                 raise RuntimeError(f"rooms not found after provisioning: {missing}")
         finally:
             await router.aclose()
+            await liaison.aclose()
 
         async with GatewayAdmin(s.switch_gateway_url) as gw:
             await gw.login(s.switch_gateway_email, s.switch_gateway_password)
             for ident in agents.values():
                 await gw.set_addressing_policy(
-                    ident.id, [room_members_rule([rooms[DESK], rooms[AUDIT]])]
+                    ident.id,
+                    [room_members_rule([rooms[DESK], rooms[AUDIT], rooms[INBOX]])],
                 )
-        report["addressing"] = "anyone in #ap-desk and #ap-audit"
+        report["addressing"] = "anyone in #ap-desk, #ap-audit and #ap-inbox"
+
+        router = SwitchAgent(agents["khata-router"], s.switch_api_url)
+        try:
+            invited = []
+            for room, names in ROOM_AGENTS.items():
+                for name in names:
+                    if name == "khata-router":
+                        continue
+                    try:
+                        await router.op(
+                            "invite_agent_to_room", room_id=rooms[room], agent_name=name
+                        )
+                        invited.append(f"{name}->{room}")
+                    except SwitchError as e:
+                        log.warning("invite %s to %s: %s", name, room, e)
+            report["room_members"] = invited
+        finally:
+            await router.aclose()
 
         bots = {b["username"]: b["user_id"] for b in await mm.bots()}
         pictured = []

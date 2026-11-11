@@ -84,6 +84,7 @@ async def room(test_db_url, tmp_path_factory):
         r.conns = {n: FakeConn(n, r.log) for n in svc.AGENTS}
         r.agents = {n: FakeAgent(n, r.log) for n in svc.AGENTS}
         r.feed = FakeConn("feed", r.log)
+        r.inbox, r.inbox_conn = "inbox-room", FakeConn("inbox", r.log)
         r.doc_ids, r._labels = {}, {}
         r.invoices, r.decisions = asyncio.Queue(), asyncio.Queue()
         yield r
@@ -231,6 +232,79 @@ async def test_a_failed_job_says_so_in_the_thread(room):
 
 
 async def test_dispatcher_cursor_survives_a_restart(room):
-    await room._save_cursor(41)
-    await room._save_cursor(42)
-    assert await room._load_cursor() == 42
+    await room._save_cursor(svc.DISPATCHER, room.desk, 41)
+    await room._save_cursor(svc.DISPATCHER, room.desk, 42)
+    await room._save_cursor(svc.LIAISON, "inbox-room", 7)
+    assert await room._load_cursor(svc.DISPATCHER, room.desk) == 42
+    assert await room._load_cursor(svc.LIAISON, "inbox-room") == 7
+
+
+# --- the vendor inbox (Vendor Liaison) ----------------------------------------
+
+
+def vendor_says(msg: str, sender: str, body: str, gid: str | None = None) -> dict:
+    p = {"message_id": msg, "sender_name": sender, "body": body}
+    if gid:
+        p["attachments"] = upload(msg, gid)["attachments"]
+    return p
+
+
+def inbox_said(r: KhataRoom, thread: str) -> str:
+    return "\n".join(e[4] for e in r.log if e[0] == "inbox" and e[2] == thread)
+
+
+async def test_an_unregistered_sender_learns_nothing(room):
+    await room.on_inbox(vendor_says("v-1", "someone", "status of DPK/1044?"))
+    text = inbox_said(room, "v-1")
+    assert "registered vendor contacts" in text and "DPK/1044" not in text
+
+
+async def test_a_vendor_contact_gets_their_own_invoice_status_only(room):
+    await room.on_inbox(vendor_says("v-2", "ramesh-dpk", "status of DPK/1044 please"))
+    assert "DPK/1044" in inbox_said(room, "v-2") and "approved" in inbox_said(
+        room, "v-2"
+    )
+    await room.on_inbox(vendor_says("v-3", "ramesh-dpk", "and MST/INV/7420?"))
+    text = inbox_said(room, "v-3")
+    assert "can't find" in text and "₹" not in text  # another vendor's invoice
+    await room.on_inbox(vendor_says("v-4", "ramesh-dpk", "any update on payments?"))
+    assert inbox_said(room, "v-4").count("DPK/") >= 2  # their recent invoices
+
+
+async def test_a_bank_change_request_is_refused_and_the_owner_alerted(room, pool):
+    await room.on_inbox(
+        vendor_says(
+            "v-5", "ramesh-dpk", "We changed banks, new account 5555 IFSC HDFC0001"
+        )
+    )
+    assert "never change bank details" in inbox_said(room, "v-5")
+    alert = [e for e in room.log if e[0] == svc.LIAISON and "@owner" in e[4]]
+    assert alert and "+91 80 2797 1180" in alert[-1][4]  # the number on file
+    assert any("bank details" in e[4] for e in room.log if e[0] == "feed")
+    async with pool.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT actor FROM audit_log WHERE action = 'vendor_bank_change_request'"
+            )
+        ).fetchone()
+    assert row["actor"] == svc.LIAISON
+
+
+async def test_a_vendor_pdf_is_forwarded_to_the_desk_and_runs(room):
+    await room.on_inbox(vendor_says("v-6", "ramesh-dpk", "invoice attached", "D02"))
+    up = [e for e in room.log if e[1] == "upload" and e[0] == svc.LIAISON]
+    assert up and "through the vendor inbox" in up[-1][4]
+    assert "with our accounts team" in inbox_said(room, "v-6")
+    # Switch then delivers the Liaison's post in #ap-desk; the Dispatcher takes it.
+    before = room.invoices.qsize()
+    await room.on_message(upload("v-6-desk", "D02", sender=svc.LIAISON))
+    assert room.invoices.qsize() == before + 1
+    while not room.invoices.empty():
+        room.invoices.get_nowait()
+        room.invoices.task_done()
+
+
+async def test_staff_in_the_inbox_are_left_alone(room):
+    n = len(room.log)
+    await room.on_inbox(vendor_says("v-7", "priya", "status of DPK/1044?"))
+    assert len(room.log) == n

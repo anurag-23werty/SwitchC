@@ -14,6 +14,8 @@ AGENT_LOOK = {
     "khata-auditor": ("#be123c", "Au"),
     "khata-router": ("#0f766e", "R"),
     "khata-payer": ("#15803d", "P"),
+    "khata-steward": ("#9333ea", "S"),
+    "khata-liaison": ("#0369a1", "L"),
 }
 
 

@@ -43,6 +43,12 @@ def policy_text(p: Policy) -> str:
             f"- Arithmetic tolerance {_rs(p.arithmetic_tolerance)}; duplicate window "
             f"{p.duplicate_window_days} days.",
             "- No agent ever pays. Payer drafts a NEFT file for a person to upload.",
+            *[
+                f"- Vendor exception: {e.vendor_code} price variance up to "
+                f"{e.max_variance_pct}% over the PO is accepted (proposed by the Policy "
+                f"Steward after {', '.join(e.evidence)}; approved by {e.approved_by})."
+                for e in p.vendor_exceptions
+            ],
         ]
     )
 
