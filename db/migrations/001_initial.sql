@@ -1,5 +1,5 @@
 -- Khata's system of record. Switch keeps the conversation; this keeps the money.
--- Everything lives in the `khata` schema so `make seed` can rebuild it cleanly.
+-- Everything lives in the `khata` schema. Applied by `khata db migrate` (khata/migrate.py).
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE SCHEMA IF NOT EXISTS khata;

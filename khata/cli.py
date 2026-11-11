@@ -262,6 +262,24 @@ async def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_db(args: argparse.Namespace) -> int:
+    from khata.config import get_settings
+    from khata.migrate import applied, available, migrate_url, pending_url
+
+    url = get_settings().khata_database_url
+    if args.action == "migrate":
+        new = migrate_url(url)
+        print("applied: " + (", ".join(new) if new else "nothing, already up to date"))
+        return 0
+    import psycopg
+
+    with psycopg.connect(url) as conn:
+        done = applied(conn)
+    for v in available():
+        print(f"{'applied' if v in done else 'PENDING'}  {v}")
+    return 1 if pending_url(url) else 0
+
+
 async def cmd_setup_switch(args: argparse.Namespace) -> int:
     from khata.config import get_settings
     from khata.switch_setup import setup
@@ -309,6 +327,9 @@ def main(argv: list[str] | None = None) -> None:
     r = sub.add_parser("retry", help="re-run a run that stopped on an error")
     r.add_argument("invoice", type=int)
     r.set_defaults(fn=cmd_retry)
+    dbp = sub.add_parser("db", help="schema migrations")
+    dbp.add_argument("action", choices=["migrate", "status"])
+    dbp.set_defaults(fn=cmd_db)
     sub.add_parser("rules", help="policy versions and rule proposals").set_defaults(
         fn=cmd_rules
     )

@@ -3,7 +3,7 @@
     uv run python -m db.seed
 
 Drops and recreates the `khata` schema (Khata's own data only — Switch's
-database is a different server), applies db/schema.sql, then loads the company,
+database is a different server), applies db/migrations, then loads the company,
 people, vendors, purchase orders, goods receipts, approval policy v1, payment
 history and vendor knowledge from data/fixtures.py.
 """
@@ -13,21 +13,21 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 from decimal import Decimal
-from pathlib import Path
 
 import psycopg
 
 from data import fixtures as fx
 from khata.config import get_settings
+from khata.migrate import migrate
 from khata.money import money
 from khata.payments import idempotency_key
 
-SCHEMA = Path(__file__).with_name("schema.sql")
-
 
 def reset_schema(conn: psycopg.Connection) -> None:
+    """Demo only: throws away everything in the `khata` schema."""
     conn.execute("DROP SCHEMA IF EXISTS khata CASCADE")
-    conn.execute(SCHEMA.read_text())
+    conn.commit()
+    migrate(conn)
 
 
 def load_masters(conn: psycopg.Connection) -> dict[str, int]:

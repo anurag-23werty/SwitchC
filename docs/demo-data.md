@@ -97,4 +97,4 @@ and 1,00,000 boundaries are tested on both sides.
 `grn_lines`, `rules` (versioned, one active), `invoices`, `invoice_lines`,
 `decisions`, `audit_log`, `tool_calls`, `vendor_knowledge` (pgvector, 384-d),
 `payment_batches`, `payment_lines` (unique idempotency key). See
-[`db/schema.sql`](../db/schema.sql).
+[`db/migrations/`](../db/migrations/) (applied by `khata db migrate`).

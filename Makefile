@@ -1,13 +1,14 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
+.PHONY: migrate help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
 	@echo "make env         create .env from .env.example, copying the Switch tokens"
 	@echo "make up          start Switch (core, Mattermost, Gateway) and Khata's database"
 	@echo "make down        stop everything (data volumes are kept)"
-	@echo "make seed        rebuild Khata's database and generate the invoice PDFs + golden set"
+	@echo "make migrate     create or upgrade Khata's database schema (keeps your data)"
+	@echo "make seed        DEMO ONLY: wipe Khata's database, load the demo business + invoice PDFs"
 	@echo "make hello       run the Phase 0 smoke-test agent"
 	@echo "make mcp AGENT=analyst   run the MCP tool server for one agent (stdio)"
 	@echo "make setup-switch  agents, people and rooms (#ap-desk, #ap-audit) on Switch"
@@ -44,6 +45,9 @@ ps:
 
 logs:
 	$(COMPOSE) logs -f switch setup
+
+migrate:
+	uv run khata db migrate
 
 seed:
 	uv run python -m db.seed

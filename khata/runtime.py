@@ -12,6 +12,7 @@ approval survives a restart; `make seed` resets both together.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ from khata.config import ROOT, Settings, get_settings
 from khata.db import make_pool
 from khata.graph.workflow import Deps, build_graph
 from khata.llm import LLM, PromptGuard, endpoints_from_settings
+from khata.migrate import pending_url
 from khata.policy import ToolGateway
 from khata.tools import Toolbox
 
@@ -73,6 +75,12 @@ class Khata:
         """Open pools, the checkpointer and the graph. `guard=False` disables Prompt Guard."""
         s = settings or get_settings()
         url = database_url or s.khata_database_url
+        behind = await asyncio.to_thread(pending_url, url)
+        if behind:
+            raise RuntimeError(
+                f"database schema is behind ({', '.join(behind)} pending): "
+                "run `khata db migrate`"
+            )
         pool = make_pool(url)
         # The checkpointer wants autocommit connections without prepared statements.
         cp_pool = AsyncConnectionPool(
