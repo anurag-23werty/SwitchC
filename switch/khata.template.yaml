@@ -21,9 +21,6 @@ params:
   owner:
     type: string
     default: owner
-  clerk:
-    type: string
-    default: ravi
 group:
   name: Khata AP
   description: Agentic accounts payable. Agents read and check invoices; people decide.
@@ -42,7 +39,9 @@ rooms:
       - khata-payer
       - khata-steward
       - khata-liaison
-    users: ["{$creator}", "{finance_manager}", "{owner}", "{clerk}"]
+    # The rest of the team (clerks and everyone else in Khata's `people` table) is
+    # added by `khata setup-switch` from the database.
+    users: ["{$creator}", "{finance_manager}", "{owner}"]
     aliases:
       khata-dispatcher: desk
       khata-router: router

@@ -1,6 +1,6 @@
 COMPOSE := docker compose --profile collab --profile gateway
 
-.PHONY: migrate help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
+.PHONY: setup-demo migrate help switch-env env up down ps logs hello test seed invoices mcp demo pending graph setup-switch serve eval dashboard steward-demo image
 
 help:
 	@echo "make switch-env  generate switch/stack/.env (Switch server secrets)"
@@ -11,7 +11,8 @@ help:
 	@echo "make seed        DEMO ONLY: wipe Khata's database, load the demo business + invoice PDFs"
 	@echo "make hello       run the Phase 0 smoke-test agent"
 	@echo "make mcp AGENT=analyst   run the MCP tool server for one agent (stdio)"
-	@echo "make setup-switch  agents, people and rooms (#ap-desk, #ap-audit) on Switch"
+	@echo "make setup-switch  agents, your team's accounts and rooms on Switch (from Khata's database)"
+	@echo "make setup-demo    the same for the demo team (one shared password in .env)"
 	@echo "make serve       run Khata's agents in the rooms (Ctrl-C to stop)"
 	@echo "make demo        run D01-D09 through the agent workflow (live LLMs, no Switch)"
 	@echo "make pending     invoices paused at the approval gate"
@@ -64,6 +65,9 @@ mcp:
 
 setup-switch:
 	uv run khata setup-switch
+
+setup-demo:
+	uv run khata setup-switch --demo
 
 serve:
 	uv run khata -v serve

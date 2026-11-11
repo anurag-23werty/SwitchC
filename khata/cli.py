@@ -389,11 +389,20 @@ async def cmd_db(args: argparse.Namespace) -> int:
 
 async def cmd_setup_switch(args: argparse.Namespace) -> int:
     from khata.config import get_settings
-    from khata.switch_setup import setup
+    from khata.switch_setup import ensure_demo_password, setup
 
+    if args.demo:
+        ensure_demo_password()
     report = await setup(get_settings())
+    created = report.pop("accounts_created", {})
     for k, v in report.items():
         print(f"{k}: {v}")
+    if created:
+        print(
+            "\nNew Mattermost accounts (hand each password over privately; shown once):"
+        )
+        for user, pw in created.items():
+            print(f"  {user:<20} {pw}")
     return 0
 
 
@@ -481,9 +490,13 @@ def main(argv: list[str] | None = None) -> None:
     db.add_argument("--host", default="127.0.0.1")
     db.add_argument("--port", type=int, default=8088)
     db.set_defaults(fn=cmd_dashboard)
-    sub.add_parser(
+    ss = sub.add_parser(
         "setup-switch", help="register agents, people and rooms on Switch"
-    ).set_defaults(fn=cmd_setup_switch)
+    )
+    ss.add_argument(
+        "--demo", action="store_true", help="demo team: one shared password from .env"
+    )
+    ss.set_defaults(fn=cmd_setup_switch)
     sub.add_parser(
         "serve", help="run Khata's agents in #ap-desk and #ap-audit"
     ).set_defaults(fn=cmd_serve)

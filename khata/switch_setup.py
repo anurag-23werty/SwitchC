@@ -23,7 +23,6 @@ from typing import Any
 
 from dotenv import dotenv_values
 
-from data import fixtures as fx
 from khata.avatars import avatar_png
 from khata.config import ROOT, Settings
 from khata.db import make_pool
@@ -110,20 +109,62 @@ class SwitchState:
         path.write_text(json.dumps({"rooms": self.rooms}, indent=2))
 
 
-def people_password() -> str:
-    """The demo team's Mattermost password: KHATA_DEMO_PASSWORD in .env, created once."""
-    env_file = ROOT / ".env"
-    current = os.environ.get("KHATA_DEMO_PASSWORD") or dotenv_values(env_file).get(
+def demo_password() -> str | None:
+    """The demo team's shared Mattermost password (KHATA_DEMO_PASSWORD), if this is
+    the demo. A real team gets a separate one-time password per new account."""
+    return os.environ.get("KHATA_DEMO_PASSWORD") or dotenv_values(ROOT / ".env").get(
         "KHATA_DEMO_PASSWORD"
     )
+
+
+def ensure_demo_password() -> str:
+    """Demo only: create KHATA_DEMO_PASSWORD in .env so the scripted demos can sign in."""
+    current = demo_password()
     if current:
         return current
     pw = "Khata-" + secrets.token_urlsafe(9)
-    with env_file.open("a") as f:
+    with (ROOT / ".env").open("a") as f:
         f.write(
-            f"\n# Mattermost password for the demo team (priya, owner, ravi)\nKHATA_DEMO_PASSWORD={pw}\n"
+            f"\n# Shared Mattermost password for the DEMO team only\nKHATA_DEMO_PASSWORD={pw}\n"
         )
+    os.environ["KHATA_DEMO_PASSWORD"] = pw
     return pw
+
+
+@dataclass
+class Team:
+    """Who belongs in the rooms, read from Khata's database (not from the demo data)."""
+
+    people: list[dict[str, Any]]  # username, display_name, role, email
+    contacts: list[dict[str, Any]]  # vendor-side: username, display_name
+    approvers: dict[str, str]
+    policy: str
+
+
+async def load_team(url: str) -> Team:
+    pool = make_pool(url, max_size=1)
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            people = await (
+                await conn.execute(
+                    "SELECT username, display_name, role, email FROM people "
+                    "WHERE active ORDER BY username"
+                )
+            ).fetchall()
+            contacts = await (
+                await conn.execute(
+                    "SELECT username, display_name FROM vendor_contacts ORDER BY username"
+                )
+            ).fetchall()
+            pol = await get_policy(conn)
+    finally:
+        await pool.close()
+    if not people:
+        raise RuntimeError(
+            "no people in Khata yet: run `khata init khata.yaml --as <owner>`"
+        )
+    return Team(people, contacts, pol.approvers, policy_text(pol))
 
 
 async def register_all(s: Settings) -> dict[str, AgentIdentity]:
@@ -142,21 +183,27 @@ async def register_all(s: Settings) -> dict[str, AgentIdentity]:
     return out
 
 
-async def ensure_people(mm: MattermostAdmin, team: str) -> list[str]:
-    pw = people_password()
-    created = []
-    for p in [*fx.PEOPLE, *fx.VENDOR_CONTACTS]:
+async def ensure_people(
+    mm: MattermostAdmin, team_name: str, team: Team
+) -> dict[str, str]:
+    """Make sure everyone has a Mattermost account in the team. Returns the accounts
+    created, with the password to hand over: the demo password, or a fresh random one
+    per person (shown once; they should change it at first sign-in)."""
+    shared = demo_password()
+    created: dict[str, str] = {}
+    for p in [*team.people, *team.contacts]:
         first, _, last = p["display_name"].partition(" ")
+        pw = shared or "Kh-" + secrets.token_urlsafe(12)
         user, new = await mm.ensure_user(
             p["username"],
-            email=f"{p['username']}@khata.example",
+            email=p.get("email") or f"{p['username']}@khata.local",
             password=pw,
             first=first,
             last=last,
         )
-        await mm.add_to_team(team, user["id"])
+        await mm.add_to_team(team_name, user["id"])
         if new:
-            created.append(p["username"])
+            created[p["username"]] = "(KHATA_DEMO_PASSWORD)" if shared else pw
     return created
 
 
@@ -173,6 +220,7 @@ async def setup(s: Settings) -> dict[str, Any]:
     stack = dotenv_values(STACK_ENV)
     report: dict[str, Any] = {}
 
+    team = await load_team(s.khata_database_url)
     agents = await register_all(s)
     report["agents"] = sorted(agents)
 
@@ -180,8 +228,8 @@ async def setup(s: Settings) -> dict[str, Any]:
         await mm.login(
             stack["MATTERMOST_ADMIN_USER"], stack["MATTERMOST_ADMIN_PASSWORD"]
         )
-        report["people_created"] = await ensure_people(
-            mm, stack["MATTERMOST_TEAM_NAME"]
+        report["accounts_created"] = await ensure_people(
+            mm, stack["MATTERMOST_TEAM_NAME"], team
         )
 
         router = SwitchAgent(agents["khata-router"], s.switch_api_url)
@@ -190,17 +238,16 @@ async def setup(s: Settings) -> dict[str, Any]:
             # The inbox has only the Liaison in it, so ask both who sees what.
             rooms = await find_rooms(liaison) | await find_rooms(router)
             if {DESK, AUDIT} - set(rooms):
-                pool = make_pool(s.khata_database_url, max_size=1)
-                await pool.open()
-                try:
-                    async with pool.connection() as conn:
-                        policy = policy_text(await get_policy(conn))
-                finally:
-                    await pool.close()
                 async with GatewayAdmin(s.switch_gateway_url) as gw:
                     await gw.login(s.switch_gateway_email, s.switch_gateway_password)
                     result = await gw.rooms_from_yaml(
-                        TEMPLATE.read_text(), {"policy": policy}, "Khata AP"
+                        TEMPLATE.read_text(),
+                        {
+                            "policy": team.policy,
+                            "finance_manager": team.approvers["finance_manager"],
+                            "owner": team.approvers["owner"],
+                        },
+                        "Khata AP",
                     )
                 errors = result.get("errors") or []
                 if errors:
@@ -234,6 +281,7 @@ async def setup(s: Settings) -> dict[str, Any]:
         report["addressing"] = "anyone in #ap-desk, #ap-audit and #ap-inbox"
 
         router = SwitchAgent(agents["khata-router"], s.switch_api_url)
+        liaison_agent = SwitchAgent(agents["khata-liaison"], s.switch_api_url)
         try:
             invited = []
             for room, names in ROOM_AGENTS.items():
@@ -248,8 +296,30 @@ async def setup(s: Settings) -> dict[str, Any]:
                     except SwitchError as e:
                         log.warning("invite %s to %s: %s", name, room, e)
             report["room_members"] = invited
+            # People join the rooms from the database: everyone in #ap-desk, the
+            # approvers in #ap-audit, vendor contacts in #ap-inbox.
+            approvers = [p["username"] for p in team.people if p["role"] != "clerk"]
+            joins = {
+                DESK: (router, [p["username"] for p in team.people]),
+                AUDIT: (router, approvers),
+                INBOX: (liaison_agent, [c["username"] for c in team.contacts]),
+            }
+            unresolved: list[str] = []
+            for room, (agent, names) in joins.items():
+                if not names:
+                    continue
+                try:
+                    res = await agent.op(
+                        "add_users_to_room", room_id=rooms[room], user_names=names
+                    )
+                    unresolved += [f"{u} ({room})" for u in res.get("unresolved") or []]
+                except SwitchError as e:
+                    log.warning("add people to %s: %s", room, e)
+                    unresolved += [f"{u} ({room})" for u in names]
+            report["people_not_added"] = unresolved or "none"
         finally:
             await router.aclose()
+            await liaison_agent.aclose()
 
         bots = {b["username"]: b["user_id"] for b in await mm.bots()}
         pictured = []

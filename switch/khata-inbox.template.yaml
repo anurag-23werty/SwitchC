@@ -8,20 +8,14 @@
 #
 # Deployed by `uv run khata setup-switch` when the room doesn't exist yet.
 version: 1
-params:
-  vendor_contacts:
-    type: string
-    default: ramesh-dpk
-  vendor_contacts_2:
-    type: string
-    default: sunita-mst
 room:
   name: ap-inbox
   description: Vendors send invoices here and ask where they stand. Khata's Vendor Liaison answers.
   channel_type: channel_public
   agents:
     - khata-liaison
-  users: ["{$creator}", "{vendor_contacts}", "{vendor_contacts_2}"]
+  # Vendor contacts (Khata's `vendor_contacts` table) are added by `khata setup-switch`.
+  users: ["{$creator}"]
   instructions: |
     Khata's vendor inbox. Vendors: send an invoice as a PDF, or ask for the
     status of one by its number. @khata-liaison answers, only about your own
