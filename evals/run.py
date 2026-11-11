@@ -456,7 +456,13 @@ async def main(args: argparse.Namespace) -> int:
             metrics["analyst_quality"] = judged["summary"]
     (RUNS / f"{stamp}.json").write_text(
         json.dumps(
-            {"metrics": metrics, "results": results, "judged": judged},
+            {
+                "mode": "offline" if args.offline else "live",
+                "ids": args.ids,
+                "metrics": metrics,
+                "results": results,
+                "judged": judged,
+            },
             default=str,
             indent=1,
         )
