@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
-from datetime import date
 from typing import Any
 
 from fastmcp import FastMCP
@@ -79,7 +78,7 @@ def main() -> None:
         pool,
         files_root=ROOT / "data",
         payments_dir=ROOT / "data" / "out" / "payments",
-        today=date.today(),
+        today=None,  # the real date, read on each call
     )
     gateway = ToolGateway(pool, toolbox.as_dict())
     mcp = build_server(args.agent, gateway)

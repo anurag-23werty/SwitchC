@@ -59,7 +59,7 @@ class Toolbox:
         *,
         files_root: Path,
         payments_dir: Path,
-        today: date,
+        today: date | None = None,
         guard: Any = None,
         embedder: Embedder | None = None,
     ) -> None:
@@ -69,7 +69,13 @@ class Toolbox:
         self.embedder = embedder or default_embedder()
         self.files_root = files_root.resolve()
         self.payments_dir = payments_dir
-        self.today = today
+        self._today = today
+
+    @property
+    def today(self) -> date:
+        """A fixed date in tests and evals; otherwise the real date, read each time,
+        so a service that runs for weeks never dates a payment batch wrongly."""
+        return self._today or date.today()
 
     def as_dict(self) -> dict[str, ToolFn]:
         return {

@@ -106,7 +106,7 @@ class Khata:
                 pool,
                 files_root=ROOT / "data",
                 payments_dir=payments_dir or s.payments_dir,
-                today=today or date.today(),
+                today=today,
                 guard=guard,
             )
             gw = ToolGateway(pool, box.as_dict())
