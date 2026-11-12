@@ -61,7 +61,10 @@ SPEC = fx.InvoiceSpec(
     date(2026, 11, 8),
     PO,
     expected=fx.Expected(
-        ("QTY_VARIANCE",), "manager_then_owner", "AWAITING_APPROVAL", "AWAITING_APPROVAL"
+        ("QTY_VARIANCE",),
+        "manager_then_owner",
+        "AWAITING_APPROVAL",
+        "AWAITING_APPROVAL",
     ),
 )
 
